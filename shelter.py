@@ -49,7 +49,7 @@ def normalize(r):
         "breed": breed, "breed_text": breed_text, "color": (r.get("animal_colour") or "").strip() or None,
         "sex": {"M": "M", "F": "F"}.get(r.get("animal_sex"), "U"),
         "age_group": {"CHILD": "kitten", "ADULT": "adult"}.get(age, "unknown"),
-        "age_months": None, "age_text": None,
+        "age_months": None, "age_months_post": None, "age_text": None,
         "neutered": sterilized, "vaccinated": vaccinated, "fiv_felv": None,
         "health_tags": "[]", "health_note": None,
         "region": region, "district": district,
@@ -59,15 +59,15 @@ def normalize(r):
         "contact_line": None, "contact_other": (r.get("shelter_address") or "").strip() or None,
         "description": remark or None, "photo": photo, "photo_hash": None, "chip": None,
         "shelter_no": r.get("animal_subid"), "available_from": opendate if opendate and opendate < "2999" else None,
-        "posted_at": (r.get("animal_createtime") or "").replace("/", "-") or None,
+        "posted_at": (r.get("animal_createtime") or "").replace("/", "-") or None, "extracted_by": "open-data",
     }
 
 
 COLUMNS = [
     "source", "source_id", "source_url", "title", "name", "breed", "breed_text", "color", "sex", "age_group",
-    "age_months", "age_text", "neutered", "vaccinated", "fiv_felv", "health_tags", "health_note", "region",
+    "age_months", "age_months_post", "age_text", "neutered", "vaccinated", "fiv_felv", "health_tags", "health_note", "region",
     "district", "location_text", "contact_name", "contact_phone", "contact_line", "contact_other",
-    "description", "photo", "photo_hash", "chip", "shelter_no", "available_from", "posted_at",
+    "description", "photo", "photo_hash", "chip", "shelter_no", "available_from", "posted_at", "extracted_by",
 ]
 
 

@@ -1,20 +1,23 @@
+import hashlib
 import io
 import json
 import re
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 from PIL import Image
 
+import ages
 import db
 import ingest
 import shelter
 from dedupe import find_duplicate
+from images import dhash
 from parser import parse_age, parse_breed_color, parse_contact, parse_health, parse_region
 
 BASE = Path(__file__).resolve().parent
@@ -27,16 +30,6 @@ app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 REGIONS = ["臺北市", "新北市", "基隆市", "桃園市", "新竹市", "新竹縣", "苗栗縣", "臺中市", "彰化縣", "南投縣",
            "雲林縣", "嘉義市", "嘉義縣", "臺南市", "高雄市", "屏東縣", "宜蘭縣", "花蓮縣", "臺東縣", "澎湖縣",
            "金門縣", "連江縣"]
-
-
-def dhash(img, size=8):
-    g = img.convert("L").resize((size + 1, size), Image.LANCZOS)
-    px = list(g.getdata())
-    bits = 0
-    for row in range(size):
-        for col in range(size):
-            bits = (bits << 1) | (px[row * (size + 1) + col] > px[row * (size + 1) + col + 1])
-    return f"{bits:016x}"
 
 
 def row_to_dict(r):
@@ -162,7 +155,8 @@ def upload_cat():
         "source": "user", "source_id": uuid.uuid4().hex, "source_url": None,
         "title": (f.get("name") or description.split("\n")[0])[:80], "name": (f.get("name") or None),
         "breed": breed, "breed_text": None, "color": (f.get("color") or "").strip() or None,
-        "sex": sex, "age_group": age_group, "age_months": age_months, "age_text": None,
+        "sex": sex, "age_group": age_group, "age_months": age_months, "age_months_post": age_months,
+        "age_text": None, "extracted_by": "user",
         "neutered": {"1": 1, "0": 0}.get(f.get("neutered")), "vaccinated": {"1": 1, "0": 0}.get(f.get("vaccinated")),
         "fiv_felv": f.get("fiv_felv") if f.get("fiv_felv") in ("neg", "pos") else None,
         "health_tags": json.dumps(tags), "health_note": (f.get("health_note") or "").strip() or None,
@@ -263,6 +257,88 @@ def review_decide(cand_id):
     return jsonify({"ok": True})
 
 
+REPORT_KINDS = {"wrong_info", "adopted", "duplicate", "inappropriate", "suggestion", "other"}
+MESSAGE_REQUIRED = {"wrong_info", "suggestion", "other"}
+_report_log = {}  # reporter hash -> recent submission times, to stop spam
+
+
+@app.post("/api/cats/<int:cat_id>/report")
+def report_cat(cat_id):
+    d = request.get_json(silent=True) or {}
+    if d.get("website"):  # honeypot field: only bots fill it in
+        return jsonify({"ok": True})
+    kind = d.get("kind")
+    message = (d.get("message") or "").strip()[:1000]
+    contact = (d.get("contact") or "").strip()[:120] or None
+    errors = {}
+    if kind not in REPORT_KINDS:
+        errors["kind"] = "required"
+    if kind in MESSAGE_REQUIRED and len(message) < 5:
+        errors["message"] = "too_short"
+    if errors:
+        return jsonify({"error": "validation", "fields": errors}), 400
+    who = hashlib.sha1(f"catadopt|{request.remote_addr}".encode()).hexdigest()[:16]
+    now = time.time()
+    recent = [t for t in _report_log.get(who, []) if now - t < 3600]
+    if len(recent) >= 5:
+        return jsonify({"error": "rate_limited"}), 429
+    _report_log[who] = recent + [now]
+    with db.connect() as conn:
+        if not conn.execute("SELECT 1 FROM cats WHERE id=?", (cat_id,)).fetchone():
+            return jsonify({"error": "not_found"}), 404
+        if conn.execute("SELECT 1 FROM reports WHERE cat_id=? AND kind=? AND reporter=? AND created_at > ? AND status='open'",
+                        (cat_id, kind, who, (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds"))).fetchone():
+            return jsonify({"ok": True})  # already received; don't pile up repeats
+        conn.execute("INSERT INTO reports (cat_id, kind, message, contact, reporter, created_at) VALUES (?,?,?,?,?,?)",
+                     (cat_id, kind, message or None, contact, who, datetime.now().isoformat(timespec="seconds")))
+    return jsonify({"ok": True}), 201
+
+
+@app.get("/api/reports")
+@local_only
+def reports_list():
+    status = request.args.get("status", "open")
+    where = "r.status='open'" if status == "open" else "r.status!='open'"
+    with db.connect() as conn:
+        rows = conn.execute(
+            f"SELECT r.* FROM reports r WHERE {where} ORDER BY r.id DESC LIMIT 200").fetchall()
+        out = []
+        for r in rows:
+            cat = conn.execute("SELECT * FROM cats WHERE id=?", (r["cat_id"],)).fetchone()
+            out.append({**dict(r), "reporter": None, "cat": row_to_dict(cat) if cat else None})
+    return jsonify({"items": out})
+
+
+@app.get("/api/reports/count")
+@local_only
+def reports_count():
+    with db.connect() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM reports WHERE status='open'").fetchone()[0]
+    return jsonify({"open": n})
+
+
+@app.post("/api/reports/<int:report_id>")
+@local_only
+def reports_handle(report_id):
+    """resolve / dismiss / reopen a report; close_cat also takes the listing offline (e.g. already adopted)."""
+    action = (request.get_json(silent=True) or {}).get("action")
+    if action not in ("resolve", "dismiss", "reopen", "close_cat"):
+        return jsonify({"error": "bad_action"}), 400
+    now = datetime.now().isoformat(timespec="seconds")
+    with db.connect() as conn:
+        rep = conn.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+        if not rep:
+            return jsonify({"error": "not_found"}), 404
+        if action == "reopen":
+            conn.execute("UPDATE reports SET status='open', handled_at=NULL WHERE id=?", (report_id,))
+        else:
+            if action == "close_cat":
+                conn.execute("UPDATE cats SET status='closed' WHERE id=?", (rep["cat_id"],))
+            status = "dismissed" if action == "dismiss" else "resolved"
+            conn.execute("UPDATE reports SET status=?, handled_at=? WHERE id=?", (status, now, report_id))
+    return jsonify({"ok": True})
+
+
 @app.post("/api/ingest/fb")
 @local_only
 def ingest_fb_endpoint():
@@ -290,11 +366,15 @@ def _sync_loop():
         time.sleep(6 * 3600)
         try:
             shelter.sync()
+            with db.connect() as conn:
+                ages.refresh(conn)  # a cat posted as "3 months old" keeps growing
         except Exception as e:  # keep the loop alive; stale data is better than none
             print("shelter sync failed:", e)
 
 
 if __name__ == "__main__":
     db.init()
+    with db.connect() as conn:
+        ages.refresh(conn)
     threading.Thread(target=_sync_loop, daemon=True).start()
     app.run(host="127.0.0.1", port=8765, debug=False)

@@ -65,7 +65,10 @@ def _match(conn, cat):
         "SELECT * FROM cats WHERE dup_of IS NULL AND status='open' AND source!='shelter'").fetchall()
     if cat.get("photo_hash"):
         for row in candidates:
-            if row["photo_hash"] and hamming(row["photo_hash"], cat["photo_hash"]) <= PHOTO_HAMMING:
+            # Two posts of one Facebook group often share a banner or album cover, so the photo only
+            # counts across different sources, or for visitor uploads where the photo is the cat itself.
+            strong = row["source"] != cat["source"] or cat["source"] == "user"
+            if strong and row["photo_hash"] and hamming(row["photo_hash"], cat["photo_hash"]) <= PHOTO_HAMMING:
                 return row, "same_photo"
     for row in candidates:
         sim = text_similarity(row["description"], cat.get("description"))

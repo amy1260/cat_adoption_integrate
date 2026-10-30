@@ -54,11 +54,11 @@ HEALTH_LINE = re.compile(
     "|".join(list(HEALTH_TAGS.values()) + [r"結紮", r"絕育", r"疫苗", r"預防針", r"愛滋", r"白血", r"FIV", r"FeLV", r"晶片", r"健康"]))
 
 NOISE_LINE = re.compile(
-    r"^(可能是.*圖像|未提供相片說明|分享的貼文|讚|回覆|分享|追蹤|加入|·|查看更多.*|顯示更多|\+\d+|"
+    r"^(以.{1,40}的身分(?:回答|留言|回覆|發文)|可能是.*圖像|未提供相片說明|分享的貼文|讚|回覆|分享|追蹤|加入|·|查看更多.*|顯示更多|\+\d+|"
     r"[\d,.]+[萬KkM]?|\d+:\d+ ?/ ?\d+:\d+|0:00 ?/ ?0:00|查看全部\d+則回覆|最相關|所有留言)\s*$")
 TIME_LINE = re.compile(r"^(?:大約\s*)?(\d+)\s*(分鐘|小時|天|週|年)前?$|^剛剛$|^昨天|^(\d+)月(\d+)日|^(\d{4})年(\d+)月(\d+)日")
 
-ADOPT_WORDS = re.compile(r"送養|認養|領養|找家|找新家|找主人|開放領養|待領養|求家|徵求(?:領養|認養|家)|尋找.{0,6}家")
+ADOPT_WORDS = re.compile(r"送養|認養|領養|找家|找新家|找主人|開放領養|待領養|求家|徵求(?:領養|認養|家)|尋找.{0,6}家|環境照|環境影片")
 EVENT_WORDS = re.compile(r"送養會|認養會|領養會|認養活動|送養活動|領養活動|市集|園遊會")
 CONDITION_MARK = re.compile(r"(?:認養|領養|送養)(?:條件|須知|資格|辦法|流程)|(?:認養|領養)人(?:需|須|要|必須)|送養條件")
 ADOPTER_AGE = re.compile(r"(?:年滿|滿|需滿|須滿|至少|超過|年齡)\s*\d{1,2}\s*歲|\d{1,2}\s*歲(?:以上|以下|才)")
@@ -263,7 +263,7 @@ def clean_post_lines(lines, captured_at):
     body = []
     for l in lines[body_start:]:
         l = l.strip()
-        if not l or NOISE_LINE.match(l) or l == "顯示較少":
+        if not l or NOISE_LINE.match(l) or l == "顯示較少" or re.search(r"可能是.{0,12}的圖像|未提供相片說明", l):
             continue
         if l == "讚" or "身分留言" in l or re.match(r"^查看.{0,8}則?(?:留言|回覆)", l) or TIME_LINE.match(l):
             if TIME_LINE.match(l) and len(body) >= 3:  # comment: [author, text, time]
@@ -284,7 +284,7 @@ def classify(text):
         return "seeking"
     if not ADOPT_WORDS.search(text):
         return "not_adoption"
-    if RESCUE_ONLY.search(text[:300]) and not re.search(r"送養|開放領養|認養條件|領養條件|找新家", text):
+    if RESCUE_ONLY.search(text[:300]) and not re.search(r"送養|開放領養|認養條件|領養條件|找新家|環境照", text):
         return "rescue"
     return "adoptable"
 
@@ -320,7 +320,7 @@ def build_cat(source, text, contact_name, posted_at, link, poster=None):
     cat = {
         "source": source, "source_id": digest, "source_url": link,
         "title": first_line[:80], "name": None, "breed": breed, "breed_text": None, "color": color,
-        "sex": parse_sex(profile), "age_group": age_group, "age_months": age_months, "age_text": age_text,
+        "sex": parse_sex(profile), "age_group": age_group, "age_months": age_months, "age_months_post": age_months, "age_text": age_text,
         "neutered": None if health["neutered"] is None else int(health["neutered"]),
         "vaccinated": None if health["vaccinated"] is None else int(health["vaccinated"]),
         "fiv_felv": health["fiv_felv"], "health_tags": json.dumps(health["tags"]),
@@ -331,5 +331,6 @@ def build_cat(source, text, contact_name, posted_at, link, poster=None):
         "photo": None, "photo_hash": None, "chip": chips[0] if chips else None,
         "shelter_no": snos[0] if snos else None, "available_from": None,
         "posted_at": posted_at.isoformat(timespec="minutes") if posted_at else None,
+        "extracted_by": "rules",
     }
     return cat, "ok"

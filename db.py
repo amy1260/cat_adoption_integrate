@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS cats (
     color TEXT,
     sex TEXT,                        -- M | F | U
     age_group TEXT,                  -- kitten | adult | senior | unknown
-    age_months INTEGER,
+    age_months INTEGER,              -- age today (kept current by ages.refresh)
+    age_months_post INTEGER,         -- age stated in the post, on the day it was posted
     age_text TEXT,
     neutered INTEGER,
     vaccinated INTEGER,
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS cats (
     status TEXT NOT NULL DEFAULT 'open',   -- open | closed
     dup_of INTEGER,
     review TEXT,                     -- NULL | pending | cleared | merged
+    extracted_by TEXT,               -- rules | llm | user | open-data: where the fields came from
     UNIQUE (source, source_id)
 );
 CREATE INDEX IF NOT EXISTS idx_cats_region ON cats(region);
@@ -61,6 +63,27 @@ CREATE TABLE IF NOT EXISTS dup_candidates (
     decided_at TEXT,
     UNIQUE (cat_id, other_id)
 );
+
+-- Answers the language model already gave, so a re-run never pays for the same post twice.
+CREATE TABLE IF NOT EXISTS llm_cache (
+    key TEXT PRIMARY KEY,            -- sha1 of model + prompt version + post text
+    result TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- Problems and suggestions sent by visitors from a cat's detail page.
+CREATE TABLE IF NOT EXISTS reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cat_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,              -- wrong_info | adopted | duplicate | inappropriate | suggestion | other
+    message TEXT,
+    contact TEXT,                    -- optional way to reach the reporter
+    reporter TEXT,                   -- hashed address, only for spotting abuse
+    created_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',   -- open | resolved | dismissed
+    handled_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
 """
 
 # Visible to the public: not merged into another listing and not awaiting review.
@@ -79,8 +102,12 @@ def init():
     with connect() as conn:
         conn.executescript(SCHEMA)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(cats)")}
-        if "review" not in cols:  # databases created before the review queue existed
-            conn.execute("ALTER TABLE cats ADD COLUMN review TEXT")
+        for col, ddl in (("review", "TEXT"), ("age_months_post", "INTEGER"), ("extracted_by", "TEXT")):
+            if col not in cols:  # databases created before this column existed
+                conn.execute(f"ALTER TABLE cats ADD COLUMN {col} {ddl}")
+        # Until now age_months held the age stated in the post; keep that as the starting point.
+        conn.execute("UPDATE cats SET age_months_post=age_months WHERE age_months_post IS NULL AND age_months IS NOT NULL")
+        conn.execute("UPDATE cats SET extracted_by='rules' WHERE extracted_by IS NULL AND source LIKE 'fb_%'")
 
 
 def flag_for_review(conn, cat_id, other_id, reason):

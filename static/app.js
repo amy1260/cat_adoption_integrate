@@ -35,8 +35,9 @@ const colorLabel = (c) => {
 };
 const sexLabel = (s) => t("sex_" + (s || "U"));
 const sourceLabel = (s) => t("src_" + s);
+const monthsLabel = (m) => (m < 12 ? t("months", { n: m }) : t("years", { n: Math.round((m / 12) * 10) / 10 }));
 function ageLabel(c) {
-  if (c.age_months != null) return c.age_months < 12 ? t("months", { n: c.age_months }) : t("years", { n: Math.round((c.age_months / 12) * 10) / 10 });
+  if (c.age_months != null) return monthsLabel(c.age_months);
   return t("age_" + (c.age_group || "unknown"));
 }
 function fmtDate(iso) {
@@ -111,6 +112,10 @@ async function openDetail(id) {
   const add = (k, v) => v && rows.push(`<dt>${esc(t(k))}</dt><dd>${v}</dd>`);
   add("sex", esc(sexLabel(c.sex)));
   add("age", esc(ageLabel(c)));
+  // a post's age is its age on the day it was posted; the figure above is already brought up to today
+  if (c.age_months_post != null && c.age_months_post !== c.age_months && c.posted_at) {
+    add("age_at_post", esc(`${monthsLabel(c.age_months_post)} (${fmtDate(c.posted_at)})`));
+  }
   add("breed", esc(breedLabel(c) || t("unknown")));
   add("f_color", esc(colorLabel(c.color) || ""));
   add("location", esc(regionLabel(c.region) + (c.district ? " " + c.district : "")));
@@ -136,9 +141,60 @@ async function openDetail(id) {
       ${c.description ? `<div><div class="fieldset-title">${esc(t("description"))}</div><div class="desc">${esc(c.description)}</div></div>` : ""}
       ${c.source_url ? `<a href="${esc(c.source_url)}" target="_blank" rel="noopener noreferrer">${esc(t("view_source"))} ↗</a>` : ""}
       ${(c.also_listed || []).length ? `<div class="meta">🔗 ${esc(t("also_listed", { n: c.also_listed.length }))}${also.map((a) => ` · <a href="${esc(a.source_url)}" target="_blank" rel="noopener noreferrer">${esc(sourceLabel(a.source))}</a>`).join("")}</div>` : ""}
+      <div class="report">
+        <button type="button" class="linkbtn" id="reportToggle" aria-expanded="false" aria-controls="reportForm">⚑ ${esc(t("rp_open"))}</button>
+        <form id="reportForm" class="form" hidden novalidate>
+          <p class="meta" style="margin:0">${esc(t("rp_intro"))}</p>
+          <div class="field"><label for="rp_kind">${esc(t("rp_kind"))}</label>
+            <select id="rp_kind" name="kind"><option value="">—</option>
+              ${["wrong_info", "adopted", "duplicate", "inappropriate", "suggestion", "other"].map((k) => `<option value="${k}">${esc(t("rp_kind_" + k))}</option>`).join("")}
+            </select><div class="err" data-rp-err="kind"></div></div>
+          <div class="field"><label for="rp_message">${esc(t("rp_message"))}</label>
+            <textarea id="rp_message" name="message" maxlength="1000" placeholder="${esc(t("rp_message_ph"))}"></textarea><div class="err" data-rp-err="message"></div></div>
+          <div class="field"><label for="rp_contact">${esc(t("rp_contact"))}</label>
+            <input type="text" id="rp_contact" name="contact" maxlength="120" placeholder="${esc(t("rp_contact_ph"))}"></div>
+          <input type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px">
+          <div id="rp_result"></div>
+          <div><button class="btn" type="submit">${esc(t("rp_submit"))}</button></div>
+        </form>
+      </div>
     </div>`;
   $("#dlgClose").onclick = () => $("#detail").close();
+  wireReport(c.id);
   if (!$("#detail").open) $("#detail").showModal();
+}
+
+function wireReport(catId) {
+  const form = $("#reportForm"), toggle = $("#reportToggle");
+  toggle.onclick = () => {
+    form.hidden = !form.hidden;
+    toggle.setAttribute("aria-expanded", String(!form.hidden));
+    toggle.textContent = "⚑ " + t(form.hidden ? "rp_open" : "rp_close");
+    if (!form.hidden) form.scrollIntoView({ block: "nearest" });
+  };
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    document.querySelectorAll("[data-rp-err]").forEach((x) => (x.textContent = ""));
+    const fd = Object.fromEntries(new FormData(form));
+    const out = $("#rp_result"), btn = form.querySelector("button[type=submit]");
+    btn.disabled = true;
+    const { status, body } = await api(`/api/cats/${catId}/report`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fd),
+    });
+    btn.disabled = false;
+    if (status === 201 || status === 200) {
+      form.reset();
+      out.innerHTML = `<div class="notice good">${esc(t("rp_thanks"))}</div>`;
+    } else if (status === 400 && body?.fields) {
+      if (body.fields.kind) $('[data-rp-err="kind"]').textContent = t("rp_err_kind");
+      if (body.fields.message) $('[data-rp-err="message"]').textContent = t("rp_err_short");
+      out.innerHTML = "";
+    } else if (status === 429) {
+      out.innerHTML = `<div class="notice warn">${esc(t("rp_limited"))}</div>`;
+    } else {
+      out.innerHTML = `<div class="notice bad">${esc(t("err_generic"))}</div>`;
+    }
+  };
 }
 $("#detail").addEventListener("click", (e) => { if (e.target.id === "detail") e.target.close(); });
 
@@ -396,18 +452,19 @@ async function renderReview() {
 
 // ---------- shell ----------
 async function refreshAdmin() {
-  const r = await api("/api/review/count");
+  const [r, rp] = await Promise.all([api("/api/review/count"), api("/api/reports/count")]);
   state.isAdmin = r.ok;
   state.pendingReview = r.ok ? r.body.pending : 0;
+  state.openReports = rp.ok ? rp.body.open : 0;
   renderNav();
 }
 
 function renderNav() {
   const route = location.hash.replace(/^#/, "") || "/";
-  const items = [["/", "nav_browse"], ["/upload", "nav_upload"]];
-  if (state.isAdmin) items.push(["/review", "nav_review"]);
-  $("#nav").innerHTML = items.map(([href, key]) =>
-    `<a href="#${href}" class="${route === href ? "active" : ""}">${esc(t(key))}${href === "/review" && state.pendingReview ? `<span class="badge">${state.pendingReview}</span>` : ""}</a>`).join("");
+  const items = [["/", "nav_browse", 0], ["/upload", "nav_upload", 0]];
+  if (state.isAdmin) items.push(["/review", "nav_review", state.pendingReview], ["/reports", "nav_reports", state.openReports]);
+  $("#nav").innerHTML = items.map(([href, key, n]) =>
+    `<a href="#${href}" class="${route === href ? "active" : ""}">${esc(t(key))}${n ? `<span class="badge">${n}</span>` : ""}</a>`).join("");
   $("#brandText").textContent = t("brand");
   $("#foot").textContent = t("foot");
   document.documentElement.lang = isEn() ? "en" : "zh-Hant";
@@ -422,7 +479,45 @@ async function route() {
   $("#app").onclick = null;
   if (r === "/upload") renderUpload();
   else if (r === "/review" && state.isAdmin) renderReview();
+  else if (r === "/reports" && state.isAdmin) renderReports();
   else renderBrowse();
+}
+
+// ---------- visitor reports (local admin only) ----------
+async function renderReports() {
+  const [open, done] = await Promise.all([api("/api/reports?status=open"), api("/api/reports?status=done")]);
+  if (!open.ok) { $("#app").innerHTML = `<section class="panel"><p>403</p></section>`; return; }
+  const item = (r, handled) => `
+    <div class="review-item" data-report="${r.id}">
+      <div class="meta"><strong>${esc(t("rp_kind_" + r.kind))}</strong> · ${esc(r.created_at.replace("T", " "))}
+        ${handled ? ` · ${esc(t(r.status === "dismissed" ? "rp_dismissed" : "rp_resolved"))}` : ""}
+        ${r.contact ? ` · ${esc(t("rp_from"))}: ${esc(r.contact)}` : ""}</div>
+      ${r.message ? `<div class="desc">${esc(r.message)}</div>` : ""}
+      <div style="max-width:360px">${r.cat ? miniHtml(r.cat) : esc(t("rp_no_cat"))}</div>
+      <div class="actions">
+        ${handled
+          ? `<button class="btn ghost" data-act="reopen" type="button">${esc(t("rp_reopen"))}</button>`
+          : `<button class="btn good" data-act="resolve" type="button">${esc(t("rp_resolve"))}</button>
+             <button class="btn ghost" data-act="dismiss" type="button">${esc(t("rp_dismiss"))}</button>
+             ${r.cat ? `<button class="btn ghost" data-act="close_cat" type="button">${esc(t("rp_close_cat"))}</button>` : ""}`}
+      </div>
+    </div>`;
+  $("#app").innerHTML = `
+  <section class="panel">
+    <h1>${esc(t("rp_title"))}</h1>
+    <p class="meta">${esc(t("rp_intro_admin"))}</p>
+    ${open.body.items.length ? open.body.items.map((r) => item(r, false)).join("") : `<p class="empty">${esc(t("rp_empty"))}</p>`}
+    ${done.body.items.length ? `<h2>${esc(t("rp_history"))}</h2>` + done.body.items.map((r) => item(r, true)).join("") : ""}
+  </section>`;
+  $("#app").onclick = async (e) => {
+    const b = e.target.closest("[data-act]");
+    if (!b) return;
+    await api("/api/reports/" + b.closest("[data-report]").dataset.report, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: b.dataset.act }),
+    });
+    await refreshAdmin();
+    renderReports();
+  };
 }
 
 document.querySelectorAll(".lang button").forEach((b) => (b.onclick = () => {
