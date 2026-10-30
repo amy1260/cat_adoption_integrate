@@ -5,6 +5,8 @@ const state = {
   lang: localStorage.getItem("lang") || "zh",
   meta: null,
   isAdmin: false,
+  isAdminReal: false,
+  visitorPreview: sessionStorage.getItem("preview") === "1",
   pendingReview: 0,
   f: { q: "", region: "", sex: "", age_group: "", source: "", breed: "", neutered: "", vaccinated: "", fiv: "", sort: "new", page: 1 },
 };
@@ -80,7 +82,7 @@ function cardHtml(c) {
     <div class="card-body">
       <h3>${esc(titleOf(c))}</h3>
       <div class="tags">${tags.map((x) => `<span class="tag">${esc(x)}</span>`).join("")}</div>
-      <div class="tags">${health.map(([x, k]) => `<span class="tag ${k}">${esc(x)}</span>`).join("")}</div>
+      <div class="tags">${health.map(([x, k]) => `<span class="tag ${k}">${esc(x)}</span>`).join("")}${state.isAdmin && c.needs_photo ? `<span class="tag warn">📷 ${esc(t("ph_tag"))}</span>` : ""}</div>
       <div class="meta">📍 ${esc(regionLabel(c.region))}${c.district ? " " + esc(c.district) : ""}${c.posted_at ? " · " + esc(fmtDate(c.posted_at)) : ""}</div>
       ${c.also_listed ? `<div class="meta">🔗 ${esc(t("also_listed", { n: c.also_listed }))}</div>` : ""}
     </div>
@@ -106,7 +108,8 @@ function miniHtml(c) {
 
 // ---------- detail dialog ----------
 async function openDetail(id) {
-  const { ok, body: c } = await api("/api/cats/" + id);
+  const mineRec = mineGet(id);
+  const { ok, body: c } = await api("/api/cats/" + id, { headers: tokenHeader(mineRec) });
   if (!ok) return;
   const rows = [];
   const add = (k, v) => v && rows.push(`<dt>${esc(t(k))}</dt><dd>${v}</dd>`);
@@ -141,6 +144,7 @@ async function openDetail(id) {
       ${c.description ? `<div><div class="fieldset-title">${esc(t("description"))}</div><div class="desc">${esc(c.description)}</div></div>` : ""}
       ${c.source_url ? `<a href="${esc(c.source_url)}" target="_blank" rel="noopener noreferrer">${esc(t("view_source"))} ↗</a>` : ""}
       ${(c.also_listed || []).length ? `<div class="meta">🔗 ${esc(t("also_listed", { n: c.also_listed.length }))}${also.map((a) => ` · <a href="${esc(a.source_url)}" target="_blank" rel="noopener noreferrer">${esc(sourceLabel(a.source))}</a>`).join("")}</div>` : ""}
+      ${manageHtml(c, mineRec)}
       <div class="report">
         <button type="button" class="linkbtn" id="reportToggle" aria-expanded="false" aria-controls="reportForm">⚑ ${esc(t("rp_open"))}</button>
         <form id="reportForm" class="form" hidden novalidate>
@@ -161,6 +165,7 @@ async function openDetail(id) {
     </div>`;
   $("#dlgClose").onclick = () => $("#detail").close();
   wireReport(c.id);
+  wireManage(c, mineRec);
   if (!$("#detail").open) $("#detail").showModal();
 }
 
@@ -388,11 +393,15 @@ async function submitUpload(e) {
   const { status, body } = await api("/api/cats", { method: "POST", body: fd });
   btn.disabled = false; btn.textContent = t("submit");
   const out = $("#result");
-  if (status === 201) {
-    out.innerHTML = `<div class="notice good"><strong>${esc(t("ok_posted"))}</strong> <a href="#/" id="gohome">${esc(t("ok_view"))}</a></div>`;
-    $("#upForm").reset(); $("#pv").hidden = true;
-  } else if (status === 202) {
-    out.innerHTML = `<div class="notice warn">${esc(t("pending_review"))}</div>`;
+  if (status === 201 || status === 202) {
+    const rec = { id: body.id, token: body.edit_token, title: (fd.get("name") || fd.get("description") || "").toString().slice(0, 40) };
+    mineAdd(rec.id, rec.token, rec.title);
+    const link = manageUrl(rec);
+    out.innerHTML = `<div class="notice ${status === 201 ? "good" : "warn"}"><strong>${esc(t(status === 201 ? "ok_posted" : "pending_review"))}</strong>
+      <p><a href="#/mine">${esc(t("nav_mine"))}</a></p>
+      <div class="meta"><strong>${esc(t("manage_title"))}</strong><br>${esc(t("manage_hint"))}</div>
+      <div class="actions" style="margin-top:8px"><input type="text" readonly value="${esc(link)}" id="mlink" style="flex:1;min-width:200px"><button class="btn small" id="mcopy" type="button">${esc(t("act_copy"))}</button></div></div>`;
+    $("#mcopy").onclick = (e) => copyText(link, e.target);
     $("#upForm").reset(); $("#pv").hidden = true;
   } else if (status === 409) {
     out.innerHTML = `<div class="notice bad"><strong>${esc(t("dup_blocked"))}</strong>
@@ -411,14 +420,15 @@ async function submitUpload(e) {
   }
 }
 
-// ---------- duplicate review (local admin only) ----------
+// ---------- duplicate review (local admin only): choose which listing stays ----------
 async function renderReview() {
   const { ok, body } = await api("/api/review");
   if (!ok) { $("#app").innerHTML = `<section class="panel"><p>403</p></section>`; return; }
-  const pair = (it) => `
+  const kept = (d) => (d.kept === "new" ? t("rv_kept_new") : d.decision === "different" ? t("rv_decided_diff") : t("rv_kept_existing"));
+  const pair = (it, withKeep) => `
     <div class="pair">
-      <div class="pair-col"><h4>${esc(t("rv_new"))}</h4>${miniHtml(it.new)}</div>
-      <div class="pair-col"><h4>${esc(t("rv_existing"))}</h4>${miniHtml(it.existing)}</div>
+      <div class="pair-col"><h4>${esc(t("rv_new"))}</h4>${miniHtml(it.new)}${withKeep ? `<button class="btn good" data-decide="keep_new" type="button" style="margin-top:8px">${esc(t("rv_keep_new"))}</button>` : ""}</div>
+      <div class="pair-col"><h4>${esc(t("rv_existing"))}</h4>${miniHtml(it.existing)}${withKeep ? `<button class="btn good" data-decide="keep_existing" type="button" style="margin-top:8px">${esc(t("rv_keep_existing"))}</button>` : ""}</div>
     </div>`;
   $("#app").innerHTML = `
   <section class="panel">
@@ -427,24 +437,23 @@ async function renderReview() {
     ${body.pending.length ? body.pending.map((it) => `
       <div class="review-item" data-cand="${it.cand_id}">
         <div class="meta">${esc(t("rv_reason"))}: <strong>${esc(t("r_" + it.reason))}</strong></div>
-        ${pair(it)}
-        <div class="actions">
-          <button class="btn good" data-decide="same" type="button">${esc(t("rv_same"))}</button>
-          <button class="btn ghost" data-decide="different" type="button">${esc(t("rv_diff"))}</button>
-        </div>
+        ${pair(it, true)}
+        <label class="check"><input type="checkbox" data-fill checked> ${esc(t("rv_fill"))}</label>
+        <div class="actions"><button class="btn ghost" data-decide="different" type="button">${esc(t("rv_diff"))}</button></div>
       </div>`).join("") : `<p class="empty">${esc(t("rv_empty"))}</p>`}
     ${body.decided.length ? `<h2>${esc(t("rv_history"))}</h2>` + body.decided.map((it) => `
       <div class="review-item" data-cand="${it.cand_id}">
-        <div class="meta">${esc(it.decision === "same" ? t("rv_decided_same") : t("rv_decided_diff"))} · ${esc(t("r_" + it.reason))}
+        <div class="meta"><strong>${esc(kept(it))}</strong> · ${esc(t("r_" + it.reason))}
           <button class="linkbtn" data-decide="undo" type="button">${esc(t("rv_undo"))}</button></div>
-        ${pair(it)}
+        ${pair(it, false)}
       </div>`).join("") : ""}
   </section>`;
   $("#app").onclick = async (e) => {
     const b = e.target.closest("[data-decide]");
     if (!b) return;
-    const id = b.closest("[data-cand]").dataset.cand;
-    await api("/api/review/" + id, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: b.dataset.decide }) });
+    const box = b.closest("[data-cand]");
+    const fill = box.querySelector("[data-fill]");
+    await api("/api/review/" + box.dataset.cand, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: b.dataset.decide, fill: fill ? fill.checked : true }) });
     await refreshAdmin();
     renderReview();
   };
@@ -452,8 +461,10 @@ async function renderReview() {
 
 // ---------- shell ----------
 async function refreshAdmin() {
-  const [r, rp] = await Promise.all([api("/api/review/count"), api("/api/reports/count")]);
-  state.isAdmin = r.ok;
+  const [r, rp, ph] = await Promise.all([api("/api/review/count"), api("/api/reports/count"), api("/api/photos/count")]);
+  state.missingPhotos = ph.ok ? ph.body.missing : 0;
+  state.isAdminReal = r.ok;
+  state.isAdmin = r.ok && !state.visitorPreview;  // preview shows the site as a poster or visitor sees it
   state.pendingReview = r.ok ? r.body.pending : 0;
   state.openReports = rp.ok ? rp.body.open : 0;
   renderNav();
@@ -461,12 +472,18 @@ async function refreshAdmin() {
 
 function renderNav() {
   const route = location.hash.replace(/^#/, "") || "/";
-  const items = [["/", "nav_browse", 0], ["/upload", "nav_upload", 0]];
-  if (state.isAdmin) items.push(["/review", "nav_review", state.pendingReview], ["/reports", "nav_reports", state.openReports]);
+  const items = [["/", "nav_browse", 0], ["/upload", "nav_upload", 0], ["/mine", "nav_mine", 0]];
+  if (state.isAdmin) items.push(["/review", "nav_review", state.pendingReview], ["/reports", "nav_reports", state.openReports], ["/photos", "nav_photos", state.missingPhotos], ["/edits", "nav_edits", 0]);
   $("#nav").innerHTML = items.map(([href, key, n]) =>
     `<a href="#${href}" class="${route === href ? "active" : ""}">${esc(t(key))}${n ? `<span class="badge">${n}</span>` : ""}</a>`).join("");
   $("#brandText").textContent = t("brand");
   $("#foot").textContent = t("foot");
+  if (state.isAdminReal) {  // the admin can look at the site as a visitor sees it
+    const b = document.createElement("button");
+    b.className = "linkbtn"; b.style.marginInlineStart = "12px"; b.textContent = t(state.visitorPreview ? "preview_off" : "preview_on");
+    b.onclick = () => { state.visitorPreview = !state.visitorPreview; sessionStorage.setItem("preview", state.visitorPreview ? "1" : "0"); location.hash = "#/"; refreshAdmin().then(route); };
+    $("#foot").appendChild(b);
+  }
   document.documentElement.lang = isEn() ? "en" : "zh-Hant";
   document.querySelectorAll(".lang button").forEach((b) => b.classList.toggle("on", b.dataset.lang === state.lang));
 }
@@ -478,8 +495,13 @@ async function route() {
   if ($("#detail").open) $("#detail").close();
   $("#app").onclick = null;
   if (r === "/upload") renderUpload();
+  else if (r === "/mine") renderMine();
+  else if (r.startsWith("/edit/")) renderEdit(r.slice(6));
+  else if (r.startsWith("/manage/")) manageLink(r);
+  else if (r === "/edits" && state.isAdmin) renderEdits();
   else if (r === "/review" && state.isAdmin) renderReview();
   else if (r === "/reports" && state.isAdmin) renderReports();
+  else if (r === "/photos" && state.isAdmin) renderPhotos();
   else renderBrowse();
 }
 
@@ -517,6 +539,234 @@ async function renderReports() {
     });
     await refreshAdmin();
     renderReports();
+  };
+}
+
+// ---------- listings without a photo (local admin only): add one by hand ----------
+async function renderPhotos() {
+  const { ok, body } = await api("/api/photos/missing");
+  if (!ok) { $("#app").innerHTML = `<section class="panel"><p>403</p></section>`; return; }
+  const item = (c) => `
+    <div class="review-item" data-cat="${c.id}">
+      <div class="meta"><strong>${esc(titleOf(c))}</strong> · ${esc(sourceLabel(c.source))} · ${esc(regionLabel(c.region))}${c.contact_name ? " · " + esc(c.contact_name) : ""}</div>
+      <div class="snip" style="white-space:pre-line;color:var(--muted)">${esc((c.description || "").slice(0, 160))}</div>
+      <div>${c.source_url ? `<a href="${esc(c.source_url)}" target="_blank" rel="noopener noreferrer">${esc(t("ph_open_post"))} ↗</a>` : `<span class="meta">${esc(t("ph_no_url"))}</span>`}</div>
+      <div class="dropzone" tabindex="0" data-paste>${esc(t("ph_paste"))}</div>
+      <div class="row">
+        <div class="field"><label>${esc(t("ph_file"))}</label><input type="file" accept="image/*" data-file></div>
+        <div class="field"><label>${esc(t("ph_url"))}</label><input type="url" placeholder="https://" data-url></div>
+      </div>
+      <div data-res></div>
+      <div class="actions"><button class="btn good" data-save type="button">${esc(t("ph_save"))}</button></div>
+    </div>`;
+  $("#app").innerHTML = `
+  <section class="panel">
+    <h1>${esc(t("ph_title"))}</h1>
+    <p class="meta">${esc(t("ph_intro"))}</p>
+    ${body.items.length ? body.items.map(item).join("") : `<p class="empty">${esc(t("ph_empty"))}</p>`}
+  </section>`;
+  const send = async (box, blob) => {
+    const res = box.querySelector("[data-res]"), fd = new FormData();
+    if (blob) fd.append("photo", blob, "photo.png");
+    else if (box.querySelector("[data-file]").files[0]) fd.append("photo", box.querySelector("[data-file]").files[0]);
+    else if (box.querySelector("[data-url]").value.trim()) fd.append("url", box.querySelector("[data-url]").value.trim());
+    else { res.innerHTML = `<div class="notice warn">${esc(t("ph_choose"))}</div>`; return; }
+    res.innerHTML = `<div class="notice">${esc(t("saving") || "…")}</div>`;
+    const r = await api(`/api/cats/${box.dataset.cat}/photo`, { method: "POST", body: fd });
+    if (r.ok) { await refreshAdmin(); renderPhotos(); } else res.innerHTML = `<div class="notice bad">${esc(t("ph_failed"))}</div>`;
+  };
+  $("#app").onclick = (e) => { const b = e.target.closest("[data-save]"); if (b) send(b.closest("[data-cat]")); };
+  $("#app").onpaste = (e) => {
+    const zone = e.target.closest && e.target.closest("[data-paste]");
+    const file = zone && [...(e.clipboardData ? e.clipboardData.files : [])].find((f) => f.type.startsWith("image/"));
+    if (file) { e.preventDefault(); send(zone.closest("[data-cat]"), file); }
+  };
+}
+
+// ---------- posters: their listings are remembered in this browser; the server checks the secret ----------
+const MINE_KEY = "catadopt-mine";
+const mineList = () => { try { return JSON.parse(localStorage.getItem(MINE_KEY) || "[]"); } catch (_) { return []; } };
+const mineSave = (list) => { try { localStorage.setItem(MINE_KEY, JSON.stringify(list.slice(0, 100))); } catch (_) { /* storage full or off */ } };
+const mineGet = (id) => mineList().find((m) => String(m.id) === String(id));
+function mineAdd(id, token, title) { mineSave([{ id, token, title, at: Date.now() }, ...mineList().filter((m) => String(m.id) !== String(id))]); }
+const manageUrl = (m) => `${location.origin}${location.pathname}#/manage/${m.id}/${m.token}`;
+const tokenHeader = (m) => (m ? { "X-Edit-Token": m.token } : {});
+async function copyText(text, btn) {
+  try { await navigator.clipboard.writeText(text); } catch (_) { prompt("", text); }
+  if (btn) { const o = btn.textContent; btn.textContent = t("copied"); setTimeout(() => { btn.textContent = o; }, 1500); }
+}
+async function manageLink(route) {  // #/manage/<id>/<secret>: restore a listing on another device
+  const [, , id, token] = route.split("/");
+  const { body } = await api("/api/mine", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: [{ id, token }] }) });
+  if (body && body.items && body.items.length) mineAdd(id, token, body.items[0].title);
+  location.hash = "#/mine";
+}
+
+// what the admin or the poster can do with one listing
+function manageHtml(c, rec) {
+  const notes = [];
+  if (c.review === "pending") notes.push(`<span class="tag warn">${esc(t("mine_pending"))}</span>`);
+  if (c.status === "closed") notes.push(`<span class="tag warn">${esc(t("mine_closed"))}</span>`);
+  let buttons = "";
+  if (c.source === "shelter") buttons = "";
+  else if (state.isAdmin) {
+    buttons = `<button class="btn small" data-act="edit" type="button">${esc(t("act_edit"))}</button>
+      <button class="btn ghost small" data-act="history" type="button">${esc(t("act_history"))}</button>
+      <button class="btn ghost small" data-act="${c.status === "closed" ? "relist" : "unlist"}" type="button">${esc(t(c.status === "closed" ? "act_relist" : "act_unlist"))}</button>`;
+  } else if (rec && c.source === "user") {
+    buttons = `<button class="btn small" data-act="edit" type="button">${esc(t("act_edit"))}</button>
+      ${c.status === "closed" ? "" : `<button class="btn ghost small" data-act="unlist" type="button">${esc(t("act_unlist"))}</button>`}
+      <button class="btn ghost small" data-act="copy" type="button">${esc(t("act_copy"))}</button>`;
+  }
+  if (!notes.length && !buttons) return "";
+  return `<div class="manage">${notes.join(" ")}<div class="actions">${buttons}</div><div id="histbox"></div></div>`;
+}
+function wireManage(c, rec) {
+  const d = $("#detail");
+  d.querySelectorAll("[data-act]").forEach((btn) => {
+    btn.onclick = async () => {
+      const act = btn.dataset.act, hdr = state.isAdmin ? {} : tokenHeader(rec);
+      if (act === "edit") { d.close(); location.hash = "#/edit/" + c.id; }
+      else if (act === "copy") copyText(manageUrl(rec), btn);
+      else if (act === "history") showHistory(c.id);
+      else if (act === "unlist") {
+        if (!confirm(t("unlist_confirm"))) return;
+        await api("/api/cats/" + c.id, { method: "DELETE", headers: hdr });
+        d.close(); await refreshAdmin(); route();
+      } else if (act === "relist") {
+        await api("/api/cats/" + c.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "open" }) });
+        await refreshAdmin(); openDetail(c.id);
+      }
+    };
+  });
+}
+
+// ---------- edit history (admin only): every change with before / after, and a way back ----------
+const fldLabel = (k) => { const v = t("fld_" + k); return v === "fld_" + k ? k : v; };
+function fmtVal(k, v) {
+  if (v === null || v === undefined || v === "") return t("hist_empty_val");
+  if (k === "health_tags") { try { return JSON.parse(v).map((x) => (HEALTH_LABEL[x] ? HEALTH_LABEL[x][isEn() ? 1 : 0] : x)).join("、") || t("hist_empty_val"); } catch (_) { return String(v); } }
+  if (k === "neutered" || k === "vaccinated") return v ? t("yes") : t("no");
+  if (k === "sex") return sexLabel(v);
+  if (k === "status") return t(v === "closed" ? "st_closed" : "st_open");
+  if (k === "photo_hash" || k === "age_months_post") return String(v);
+  const x = String(v); return x.length > 90 ? x.slice(0, 90) + "…" : x;
+}
+function editRow(e, showCat) {
+  const who = t(e.actor === "owner" ? "hist_by_owner" : "hist_by_admin");
+  const keys = Object.keys(e.after).filter((k) => k !== "photo_hash" && k !== "age_months_post");
+  return `<div class="edit-row" data-edit="${e.id}">
+    <div class="meta">${esc(e.created_at.replace("T", " "))} · <strong>${esc(who)}</strong>${e.note ? " · " + esc(e.note) : ""}${showCat ? ` · <a href="#" data-opencat="${e.cat_id}">${esc(e.cat_name || e.cat_title || "#" + e.cat_id)}</a>` : ""}</div>
+    <ul class="diff">${keys.map((k) => `<li><b>${esc(fldLabel(k))}</b>：${esc(fmtVal(k, e.before[k]))} → ${esc(fmtVal(k, e.after[k]))}</li>`).join("")}</ul>
+    ${e.reverted_by ? `<span class="tag">${esc(t("hist_reverted"))}</span>` : `<button class="btn ghost small" data-revert="${e.id}" type="button">${esc(t("hist_revert"))}</button>${e.is_current ? "" : ` <span class="meta">${esc(t("hist_later"))}</span>`}`}
+  </div>`;
+}
+async function showHistory(catId) {
+  const box = $("#histbox");
+  const { body } = await api("/api/admin/edits?cat_id=" + catId);
+  box.innerHTML = `<div class="meta">${esc(t("hist_intro"))}</div>` + (body.items.length ? body.items.map((e) => editRow(e, false)).join("") : `<p class="meta">${esc(t("hist_empty"))}</p>`);
+  box.onclick = async (ev) => {
+    const b = ev.target.closest("[data-revert]");
+    if (!b) return;
+    await api("/api/admin/edits/" + b.dataset.revert + "/revert", { method: "POST" });
+    await refreshAdmin(); openDetail(catId);
+  };
+}
+async function renderEdits() {
+  const { ok, body } = await api("/api/admin/edits?limit=200");
+  if (!ok) { $("#app").innerHTML = `<section class="panel"><p>403</p></section>`; return; }
+  $("#app").innerHTML = `<section class="panel"><h1>${esc(t("hist_title"))}</h1><p class="meta">${esc(t("hist_intro"))}</p>
+    ${body.items.length ? body.items.map((e) => editRow(e, true)).join("") : `<p class="empty">${esc(t("hist_empty"))}</p>`}</section>`;
+  $("#app").onclick = async (ev) => {
+    const r = ev.target.closest("[data-revert]"), o = ev.target.closest("[data-opencat]");
+    if (o) { ev.preventDefault(); openDetail(o.dataset.opencat); }
+    if (r) { await api("/api/admin/edits/" + r.dataset.revert + "/revert", { method: "POST" }); await refreshAdmin(); renderEdits(); }
+  };
+}
+
+// ---------- my listings (this browser) ----------
+async function renderMine() {
+  const recs = mineList();
+  $("#app").innerHTML = `<section class="panel"><h1>${esc(t("mine_title"))}</h1><p class="meta">${esc(t("mine_intro"))}</p><div id="minebox"><p class="meta">…</p></div></section>`;
+  const { body } = recs.length ? await api("/api/mine", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: recs.map(({ id, token }) => ({ id, token })) }) }) : { body: { items: [] } };
+  const items = (body && body.items) || [];
+  $("#minebox").innerHTML = items.length ? items.map((c) => `
+    <div class="review-item" data-id="${c.id}">
+      <div style="max-width:380px">${miniHtml(c)}</div>
+      <div>${c.pending ? `<span class="tag warn">${esc(t("mine_pending"))}</span>` : ""}${c.closed ? `<span class="tag warn">${esc(t("mine_closed"))}</span>` : ""}</div>
+      <div class="actions"><button class="btn small" data-m="edit" type="button">${esc(t("act_edit"))}</button>
+        ${c.closed ? "" : `<button class="btn ghost small" data-m="unlist" type="button">${esc(t("act_unlist"))}</button>`}
+        <button class="btn ghost small" data-m="copy" type="button">${esc(t("act_copy"))}</button></div>
+    </div>`).join("") : `<p class="empty">${esc(t("mine_empty"))}</p>`;
+  $("#minebox").onclick = async (e) => {
+    const b = e.target.closest("[data-m]");
+    if (!b) return;
+    const id = b.closest("[data-id]").dataset.id, rec = mineGet(id);
+    if (b.dataset.m === "edit") location.hash = "#/edit/" + id;
+    else if (b.dataset.m === "copy") copyText(manageUrl(rec), b);
+    else if (b.dataset.m === "unlist" && confirm(t("unlist_confirm"))) { await api("/api/cats/" + id, { method: "DELETE", headers: tokenHeader(rec) }); renderMine(); }
+  };
+}
+
+// ---------- edit form: the admin sees every field, a poster only their own ----------
+async function renderEdit(id) {
+  const rec = mineGet(id), admin = state.isAdmin;
+  const { ok, body: c } = await api("/api/cats/" + id, { headers: admin ? {} : tokenHeader(rec) });
+  if (!ok || c.source === "shelter" || (!admin && !(rec && c.source === "user"))) { $("#app").innerHTML = `<section class="panel"><div class="notice bad">${esc(t("no_perm"))}</div></section>`; return; }
+  const m = state.meta || { regions: Object.keys(REGION_EN) };
+  const o = (v, l, sel) => `<option value="${esc(v)}"${sel ? " selected" : ""}>${esc(l)}</option>`;
+  const tri = (k) => `<select id="e_${k}">${o("", t("unknown"), c[k] == null)}${o("1", t("yes"), c[k] === true)}${o("0", t("no"), c[k] === false)}</select>`;
+  const txt = (k, label, type = "text") => `<div class="field"><label for="e_${k}">${esc(label)}</label><input type="${type}" id="e_${k}" value="${esc(c[k] ?? "")}"></div>`;
+  $("#app").innerHTML = `<section class="panel"><h1>${esc(t(admin ? "edit_admin_title" : "edit_title"))}</h1>
+    <p class="meta">${esc(titleOf(c))}${admin ? " · " + esc(t("hist_intro")) : ""}</p>
+    <form class="form" id="eform" novalidate>
+      <div class="row">${txt("name", t("f_name"))}
+        <div class="field"><label for="e_region">${esc(t("region"))}</label><select id="e_region"><option value="">—</option>${m.regions.map((r) => o(r, regionLabel(r), c.region === r)).join("")}</select><div class="err" data-err="region"></div></div>
+        ${txt("district", t("f_district"))}</div>
+      <div class="row"><div class="field"><label for="e_sex">${esc(t("sex"))}</label><select id="e_sex">${["U", "M", "F"].map((k) => o(k, sexLabel(k), c.sex === k)).join("")}</select></div>
+        <div class="field"><label for="e_age_now">${esc(t("f_age_now"))}</label><input type="number" id="e_age_now" min="0" max="300" value="${c.age_months ?? ""}"></div>
+        <div class="field"><label for="e_breed">${esc(t("breed"))}</label><select id="e_breed">${o("", t("unknown"), !c.breed)}${Object.keys(BREED_LABEL).map((b) => o(b, BREED_LABEL[b][isEn() ? 1 : 0], c.breed === b)).join("")}</select></div>
+        ${txt("color", t("f_color"))}</div>
+      <div class="row"><div class="field"><label for="e_neutered">${esc(t("neutered"))}</label>${tri("neutered")}</div>
+        <div class="field"><label for="e_vaccinated">${esc(t("vaccinated"))}</label>${tri("vaccinated")}</div>
+        <div class="field"><label for="e_fiv_felv">${esc(t("fiv_felv"))}</label><select id="e_fiv_felv">${o("", t("unknown"), !c.fiv_felv)}${o("neg", t("neg"), c.fiv_felv === "neg")}${o("pos", t("pos"), c.fiv_felv === "pos")}</select></div></div>
+      ${txt("health_note", t("f_health_note"))}
+      <div class="field"><label for="e_description">${esc(t("f_desc"))}</label><textarea id="e_description">${esc(c.description || "")}</textarea><div class="err" data-err="description"></div></div>
+      <fieldset style="border:1px solid var(--line);border-radius:12px;padding:12px"><legend>${esc(t("contact"))}</legend>
+        <div class="row">${txt("contact_name", t("f_name_contact"))}${txt("contact_phone", t("f_phone"), "tel")}${txt("contact_line", t("f_line"))}${txt("contact_other", t("f_other"))}</div>
+        <div class="err" data-err="contact_name"></div><div class="err" data-err="contact"></div></fieldset>
+      <div class="field"><label for="e_photo">${esc(t("edit_photo"))}</label><input type="file" id="e_photo" accept="image/*"></div>
+      ${admin ? `<fieldset style="border:1px dashed var(--line);border-radius:12px;padding:12px"><legend>${esc(t("edit_admin_only"))}</legend>
+        <div class="row">${txt("title", t("f_title"))}${txt("breed_text", t("f_breed_text"))}${txt("age_text", t("f_age_text"))}${txt("location_text", t("f_location_text"))}${txt("available_from", t("f_available_from"))}
+          <div class="field"><label for="e_status">${esc(t("f_status"))}</label><select id="e_status">${o("open", t("st_open"), c.status !== "closed")}${o("closed", t("st_closed"), c.status === "closed")}</select></div></div>
+        ${txt("source_url", t("f_source_url"), "url")}
+        <div class="field"><span class="fieldset-title">${esc(t("f_tags"))}</span><div class="chips" id="e_tags">${Object.keys(HEALTH_LABEL).map((k) => `<label class="check"><input type="checkbox" value="${k}"${(c.health_tags || []).includes(k) ? " checked" : ""}> ${esc(HEALTH_LABEL[k][isEn() ? 1 : 0])}</label>`).join("")}</div></div></fieldset>` : ""}
+      <div id="eres"></div>
+      <div class="actions"><button class="btn" id="esave" type="submit">${esc(t("save"))}</button><a class="btn ghost" href="#/${admin ? "" : "mine"}" style="text-decoration:none">${esc(t("close"))}</a></div>
+    </form></section>`;
+  $("#eform").onsubmit = async (ev) => {
+    ev.preventDefault();
+    document.querySelectorAll("[data-err]").forEach((x) => { x.textContent = ""; });
+    const v = (k) => $("#e_" + k).value.trim();
+    const body = { name: v("name"), region: v("region"), district: v("district"), sex: v("sex"), age_now: v("age_now") === "" ? null : Number(v("age_now")),
+      breed: v("breed"), color: v("color"), neutered: v("neutered"), vaccinated: v("vaccinated"), fiv_felv: v("fiv_felv"), health_note: v("health_note"),
+      description: v("description"), contact_name: v("contact_name"), contact_phone: v("contact_phone"), contact_line: v("contact_line"), contact_other: v("contact_other") };
+    if (admin) Object.assign(body, { title: v("title"), breed_text: v("breed_text"), age_text: v("age_text"), location_text: v("location_text"), available_from: v("available_from"),
+      source_url: v("source_url"), status: v("status"), health_tags: [...document.querySelectorAll("#e_tags input:checked")].map((x) => x.value) });
+    const btn = $("#esave"); btn.disabled = true;
+    const hdr = { "Content-Type": "application/json", ...(admin ? {} : tokenHeader(rec)) };
+    const r = await api("/api/cats/" + id, { method: "PUT", headers: hdr, body: JSON.stringify(body) });
+    let photoFailed = false;
+    const file = $("#e_photo").files[0];
+    if (r.ok && file) {
+      const fd = new FormData(); fd.append("photo", file);
+      photoFailed = !(await api(`/api/cats/${id}/photo`, { method: "POST", headers: admin ? {} : tokenHeader(rec), body: fd })).ok;
+    }
+    btn.disabled = false;
+    if (r.ok) { await refreshAdmin(); $("#eres").innerHTML = `<div class="notice ${photoFailed ? "warn" : "good"}">${esc(t(photoFailed ? "ph_failed" : "saved"))}</div>`; }
+    else if (r.status === 400 && r.body && r.body.fields) {
+      Object.entries(r.body.fields).forEach(([k, code]) => { const el = document.querySelector(`[data-err="${k}"]`) || $("#eres"); el.textContent = t("err_" + code) === "err_" + code ? `${fldLabel(k)}: ${code}` : t("err_" + code); });
+    } else $("#eres").innerHTML = `<div class="notice bad">${esc(t(r.status === 403 ? "no_perm" : "err_generic"))}</div>`;
   };
 }
 

@@ -14,10 +14,11 @@ from PIL import Image
 
 import ages
 import db
+import edits
 import ingest
 import shelter
 from dedupe import find_duplicate
-from images import dhash
+from images import dhash, download, save_bytes
 from parser import parse_age, parse_breed_color, parse_contact, parse_health, parse_region
 
 BASE = Path(__file__).resolve().parent
@@ -34,9 +35,11 @@ REGIONS = ["臺北市", "新北市", "基隆市", "桃園市", "新竹市", "新
 
 def row_to_dict(r):
     d = dict(r)
+    d.pop("edit_token_hash", None)
     d["health_tags"] = json.loads(d["health_tags"] or "[]")
     for k in ("neutered", "vaccinated"):
         d[k] = None if d[k] is None else bool(d[k])
+    d["needs_photo"] = d["source"] != "shelter" and not d["photo"]  # shown to the admin, who can add one by hand
     return d
 
 
@@ -79,15 +82,33 @@ def list_cats():
     return jsonify({"total": total, "page": page, "per_page": per, "items": [row_to_dict(r) for r in rows]})
 
 
+def _is_local():
+    return request.remote_addr in ("127.0.0.1", "::1")
+
+
+def _actor_for(conn, cat_id):
+    """Who is asking to change this listing: ("owner", row) with the poster's secret, ("admin", row) from the
+    machine running the site, otherwise (None, row) and the caller answers 403. (None, None) if it does not exist."""
+    row = conn.execute("SELECT * FROM cats WHERE id=?", (cat_id,)).fetchone()
+    if row is None:
+        return None, None
+    if edits.token_ok(row, request.headers.get("X-Edit-Token", "")):
+        return "owner", row
+    return ("admin" if _is_local() else None), row
+
+
 @app.get("/api/cats/<int:cat_id>")
 def get_cat(cat_id):
     with db.connect() as conn:
         row = conn.execute("SELECT * FROM cats WHERE id=?", (cat_id,)).fetchone()
-        hidden = row and row["review"] == "pending" and request.remote_addr not in ("127.0.0.1", "::1")
-        if not row or hidden:
+        # waiting for review or taken down: only the poster (with the secret) and the admin may open it
+        withheld = row and (row["review"] == "pending" or row["status"] == "closed")
+        if not row or (withheld and not _is_local() and not edits.token_ok(row, request.headers.get("X-Edit-Token", ""))):
             return jsonify({"error": "not_found"}), 404
         also = conn.execute(
-            "SELECT id, source, source_url, contact_name, posted_at FROM cats WHERE dup_of=?", (cat_id,)).fetchall()
+            "WITH RECURSIVE tree(id) AS (SELECT id FROM cats WHERE dup_of=? UNION SELECT c.id FROM cats c JOIN tree t ON c.dup_of=t.id) "
+            "SELECT c.id, c.source, c.source_url, c.contact_name, c.posted_at FROM cats c JOIN tree USING(id)",
+            (cat_id,)).fetchall()
     d = row_to_dict(row)
     d["also_listed"] = [dict(a) for a in also]  # same cat confirmed as listed by other sources
     return jsonify(d)
@@ -173,10 +194,13 @@ def upload_cat():
         if photo_path:
             img.save(UPLOAD_DIR / Path(photo_path).name, "JPEG", quality=85)
         new_id = ingest.insert_cat(conn, cat)
+        # The poster's secret is handed over once; only its hash is kept, so nobody else can edit this listing.
+        secret, hashed = edits.new_token()
+        conn.execute("UPDATE cats SET edit_token_hash=? WHERE id=?", (hashed, new_id))
         if kind == "review":
             db.flag_for_review(conn, new_id, dup["id"], why)
-            return jsonify({"id": new_id, "status": "pending_review", "reason": why}), 202
-    return jsonify({"id": new_id}), 201
+            return jsonify({"id": new_id, "edit_token": secret, "status": "pending_review", "reason": why}), 202
+    return jsonify({"id": new_id, "edit_token": secret}), 201
 
 
 @app.post("/api/cats/preview")
@@ -205,7 +229,7 @@ def local_only(fn):
 def _review_rows(conn, decided):
     cond = "d.decision IS NOT NULL" if decided else "d.decision IS NULL"
     rows = conn.execute(
-        f"SELECT d.id AS cand_id, d.reason, d.decision, d.created_at AS flagged_at, d.cat_id, d.other_id "
+        f"SELECT d.id AS cand_id, d.reason, d.decision, d.kept, d.created_at AS flagged_at, d.cat_id, d.other_id "
         f"FROM dup_candidates d WHERE {cond} ORDER BY d.id DESC LIMIT 200").fetchall()
     out = []
     for r in rows:
@@ -213,7 +237,7 @@ def _review_rows(conn, decided):
         b = conn.execute("SELECT * FROM cats WHERE id=?", (r["other_id"],)).fetchone()
         if a and b:
             out.append({"cand_id": r["cand_id"], "reason": r["reason"], "decision": r["decision"],
-                        "flagged_at": r["flagged_at"], "new": row_to_dict(a), "existing": row_to_dict(b)})
+                        "kept": r["kept"], "flagged_at": r["flagged_at"], "new": row_to_dict(a), "existing": row_to_dict(b)})
     return out
 
 
@@ -235,25 +259,41 @@ def review_count():
 @app.post("/api/review/<int:cand_id>")
 @local_only
 def review_decide(cand_id):
-    """same -> merge the newer listing into the older one; different -> release it to the public list;
-    undo -> put the decision back in the queue."""
-    decision = (request.get_json(silent=True) or {}).get("decision")
-    if decision not in ("same", "different", "undo"):
+    """keep_new / keep_existing: same cat, the admin picks which listing stays (the other is hidden and shown as
+    "also listed"); different: both stay; undo: put the decision back in the queue."""
+    data = request.get_json(silent=True) or {}
+    decision = {"same": "keep_existing"}.get(data.get("decision"), data.get("decision"))
+    fill = data.get("fill", True) is not False  # copy what the hidden listing alone knows into the kept one
+    if decision not in ("keep_new", "keep_existing", "different", "undo"):
         return jsonify({"error": "bad_decision"}), 400
     now = datetime.now().isoformat(timespec="seconds")
     with db.connect() as conn:
         cand = conn.execute("SELECT * FROM dup_candidates WHERE id=?", (cand_id,)).fetchone()
         if not cand:
             return jsonify({"error": "not_found"}), 404
-        if decision == "same":
-            conn.execute("UPDATE cats SET dup_of=?, review='merged' WHERE id=?", (cand["other_id"], cand["cat_id"]))
-            conn.execute("UPDATE dup_candidates SET decision='same', decided_at=? WHERE id=?", (now, cand_id))
-        elif decision == "different":
-            conn.execute("UPDATE cats SET dup_of=NULL, review='cleared' WHERE id=?", (cand["cat_id"],))
+        if decision != "undo" and cand["decision"]:
+            return jsonify({"error": "already_decided"}), 409
+        new_id, old_id = cand["cat_id"], cand["other_id"]
+        if decision == "different":
+            conn.execute("UPDATE cats SET dup_of=NULL, review='cleared' WHERE id=?", (new_id,))
             conn.execute("UPDATE dup_candidates SET decision='different', decided_at=? WHERE id=?", (now, cand_id))
-        else:
-            conn.execute("UPDATE cats SET dup_of=NULL, review='pending' WHERE id=?", (cand["cat_id"],))
-            conn.execute("UPDATE dup_candidates SET decision=NULL, decided_at=NULL WHERE id=?", (cand_id,))
+        elif decision in ("keep_new", "keep_existing"):
+            keep, drop = (new_id, old_id) if decision == "keep_new" else (old_id, new_id)
+            fill_edit = edits.fill_blanks(conn, keep, drop) if fill else None
+            conn.execute("UPDATE cats SET dup_of=NULL, review=CASE WHEN review='pending' THEN 'cleared' ELSE review END WHERE id=?", (keep,))
+            conn.execute("UPDATE cats SET dup_of=?, review='merged' WHERE id=?", (keep, drop))
+            conn.execute("UPDATE dup_candidates SET decision=?, kept=?, fill_edit=?, decided_at=? WHERE id=?",
+                         (decision, "new" if keep == new_id else "existing", fill_edit, now, cand_id))
+        else:  # undo
+            if cand["fill_edit"]:
+                try:
+                    edits.revert_edit(conn, cand["fill_edit"], f"undo merge #{cand_id}")
+                except edits.EditError:
+                    pass  # already undone by hand
+            if cand["kept"] == "new":  # the older listing had been hidden: bring it back
+                conn.execute("UPDATE cats SET dup_of=NULL, review=NULL WHERE id=?", (old_id,))
+            conn.execute("UPDATE cats SET dup_of=NULL, review='pending' WHERE id=?", (new_id,))
+            conn.execute("UPDATE dup_candidates SET decision=NULL, kept=NULL, fill_edit=NULL, decided_at=NULL WHERE id=?", (cand_id,))
     return jsonify({"ok": True})
 
 
@@ -292,6 +332,138 @@ def report_cat(cat_id):
         conn.execute("INSERT INTO reports (cat_id, kind, message, contact, reporter, created_at) VALUES (?,?,?,?,?,?)",
                      (cat_id, kind, message or None, contact, who, datetime.now().isoformat(timespec="seconds")))
     return jsonify({"ok": True}), 201
+
+
+@app.get("/api/photos/missing")
+@local_only
+def photos_missing():
+    """Listings that stay up without a photo, so the admin can add one by hand."""
+    with db.connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM cats WHERE source!='shelter' AND photo IS NULL AND {db.PUBLIC} ORDER BY posted_at DESC").fetchall()
+    return jsonify({"items": [row_to_dict(r) for r in rows]})
+
+
+@app.get("/api/photos/count")
+@local_only
+def photos_count():
+    with db.connect() as conn:
+        n = conn.execute(f"SELECT COUNT(*) FROM cats WHERE source!='shelter' AND photo IS NULL AND {db.PUBLIC}").fetchone()[0]
+    return jsonify({"missing": n})
+
+
+@app.post("/api/cats/<int:cat_id>/photo")
+def set_photo(cat_id):
+    """Attach or replace a photo: the admin (any listing but a shelter's) or the poster (own listing)."""
+    with db.connect() as conn:
+        actor, row = _actor_for(conn, cat_id)
+    if row is None or row["source"] == "shelter":
+        return jsonify({"error": "not_found"}), 404
+    if actor is None or (actor == "owner" and row["source"] != "user"):
+        return jsonify({"error": "forbidden"}), 403
+    upload = request.files.get("photo")
+    url = (request.form.get("url") or "").strip()
+    if upload and (upload.filename or upload.mimetype.startswith("image/")):
+        path, phash = save_bytes(upload.read())
+    elif url.startswith(("http://", "https://")):
+        path, phash = download(url)
+    else:
+        return jsonify({"error": "no_image"}), 400
+    if not path:
+        return jsonify({"error": "unusable_image"}), 422
+    with db.connect() as conn:
+        edits.apply_edit(conn, cat_id, {"photo": path, "photo_hash": phash}, actor, "photo")
+    return jsonify({"photo": path})
+
+
+@app.put("/api/cats/<int:cat_id>")
+def update_cat(cat_id):
+    """Change a listing: the admin may change any field; the poster only their own listing and only the fields
+    they filled in. Everything is recorded in the edit history."""
+    body = request.get_json(silent=True) or {}
+    with db.connect() as conn:
+        actor, row = _actor_for(conn, cat_id)
+        if row is None:
+            return jsonify({"error": "not_found"}), 404
+        if row["source"] == "shelter":  # the shelter open data is re-synced and would overwrite any edit
+            return jsonify({"error": "shelter_data"}), 403
+        if actor is None or (actor == "owner" and row["source"] != "user"):
+            return jsonify({"error": "forbidden"}), 403
+        try:
+            cols = edits.normalize(body, edits.OWNER_FIELDS if actor == "owner" else edits.ADMIN_FIELDS, row["posted_at"])
+        except edits.EditError as e:
+            return jsonify({"error": "validation", "fields": {e.field: e.code}}), 400
+        merged = {**dict(row), **cols}
+        errors = {}
+        if row["source"] == "user":  # what the upload form asks for stays required
+            if len(merged["description"] or "") < 10:
+                errors["description"] = "too_short"
+            if not merged["contact_name"]:
+                errors["contact_name"] = "required"
+            if not (merged["contact_phone"] or merged["contact_line"] or merged["contact_other"]):
+                errors["contact"] = "required"
+            if not merged["region"]:
+                errors["region"] = "required"
+            if "title" not in body and ("name" in cols or "description" in cols):
+                cols["title"] = (merged["name"] or (merged["description"] or "").split("\n")[0])[:80]
+        if errors:
+            return jsonify({"error": "validation", "fields": errors}), 400
+        edit_id = edits.apply_edit(conn, cat_id, cols, actor)
+        fresh = conn.execute("SELECT * FROM cats WHERE id=?", (cat_id,)).fetchone()
+    return jsonify({"ok": True, "edit_id": edit_id, "cat": row_to_dict(fresh)})
+
+
+@app.delete("/api/cats/<int:cat_id>")
+def unlist_cat(cat_id):
+    """Take a listing down (not erased: the admin can bring it back from the edit history)."""
+    with db.connect() as conn:
+        actor, row = _actor_for(conn, cat_id)
+        if row is None:
+            return jsonify({"error": "not_found"}), 404
+        if row["source"] == "shelter" or actor is None or (actor == "owner" and row["source"] != "user"):
+            return jsonify({"error": "forbidden"}), 403
+        edits.apply_edit(conn, cat_id, {"status": "closed"}, actor, "unlisted")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/mine")
+def my_listings():
+    """The poster's own listings, found from the secrets their browser kept. Anything that does not match is skipped."""
+    items = (request.get_json(silent=True) or {}).get("items") or []
+    out = []
+    with db.connect() as conn:
+        for it in items[:50]:
+            try:
+                row = conn.execute("SELECT * FROM cats WHERE id=?", (int(it.get("id")),)).fetchone()
+            except (TypeError, ValueError):
+                continue
+            if row is not None and edits.token_ok(row, str(it.get("token") or "")):
+                d = row_to_dict(row)
+                d["pending"] = row["review"] == "pending"
+                d["closed"] = row["status"] == "closed"
+                out.append(d)
+    return jsonify({"items": out})
+
+
+@app.get("/api/admin/edits")
+@local_only
+def admin_edits():
+    cat_id = request.args.get("cat_id", type=int)
+    with db.connect() as conn:
+        return jsonify({"items": edits.history(conn, cat_id, min(500, request.args.get("limit", 200, type=int)))})
+
+
+@app.post("/api/admin/edits/<int:edit_id>/revert")
+@local_only
+def admin_revert(edit_id):
+    with db.connect() as conn:
+        try:
+            new_id = edits.revert_edit(conn, edit_id)
+        except LookupError:
+            return jsonify({"error": "not_found"}), 404
+        except edits.EditError as e:
+            return jsonify({"error": e.code}), 409
+    return jsonify({"ok": True, "edit_id": new_id})
 
 
 @app.get("/api/reports")

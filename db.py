@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS cats (
     dup_of INTEGER,
     review TEXT,                     -- NULL | pending | cleared | merged
     extracted_by TEXT,               -- rules | llm | user | open-data: where the fields came from
+    edit_token_hash TEXT,            -- sha256 of the poster's secret; the secret itself is never stored
     UNIQUE (source, source_id)
 );
 CREATE INDEX IF NOT EXISTS idx_cats_region ON cats(region);
@@ -61,8 +62,23 @@ CREATE TABLE IF NOT EXISTS dup_candidates (
     created_at TEXT NOT NULL,
     decision TEXT,                   -- NULL (pending) | same | different
     decided_at TEXT,
+    kept TEXT,                       -- new | existing: which listing stays when they are the same cat
+    fill_edit INTEGER,               -- the edit that copied blanks into the kept listing (undone with the merge)
     UNIQUE (cat_id, other_id)
 );
+
+-- Every change to a listing: before and after, so it can be put back. Only the admin sees this.
+CREATE TABLE IF NOT EXISTS cat_edits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cat_id INTEGER NOT NULL,
+    actor TEXT NOT NULL,             -- admin | owner
+    note TEXT,
+    before TEXT NOT NULL,            -- JSON of the replaced values
+    after TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    reverted_by INTEGER              -- the edit that undid this one (-1: undone, nothing left to change)
+);
+CREATE INDEX IF NOT EXISTS idx_cat_edits_cat ON cat_edits(cat_id);
 
 -- Answers the language model already gave, so a re-run never pays for the same post twice.
 CREATE TABLE IF NOT EXISTS llm_cache (
@@ -102,9 +118,13 @@ def init():
     with connect() as conn:
         conn.executescript(SCHEMA)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(cats)")}
-        for col, ddl in (("review", "TEXT"), ("age_months_post", "INTEGER"), ("extracted_by", "TEXT")):
+        for col, ddl in (("review", "TEXT"), ("age_months_post", "INTEGER"), ("extracted_by", "TEXT"), ("edit_token_hash", "TEXT")):
             if col not in cols:  # databases created before this column existed
                 conn.execute(f"ALTER TABLE cats ADD COLUMN {col} {ddl}")
+        dcols = {r["name"] for r in conn.execute("PRAGMA table_info(dup_candidates)")}
+        for col, ddl in (("kept", "TEXT"), ("fill_edit", "INTEGER")):
+            if col not in dcols:
+                conn.execute(f"ALTER TABLE dup_candidates ADD COLUMN {col} {ddl}")
         # Until now age_months held the age stated in the post; keep that as the starting point.
         conn.execute("UPDATE cats SET age_months_post=age_months WHERE age_months_post IS NULL AND age_months IS NOT NULL")
         conn.execute("UPDATE cats SET extracted_by='rules' WHERE extracted_by IS NULL AND source LIKE 'fb_%'")
