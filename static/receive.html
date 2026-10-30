@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Import</title>
+<body style="font-family:sans-serif;padding:24px">
+<pre id="out">Importing…</pre>
+<script>
+// Data arrives in the URL fragment so it never leaves this machine.
+(async () => {
+  const out = document.getElementById("out");
+  try {
+    const payload = JSON.parse(decodeURIComponent(location.hash.slice(1)));
+    const r = await fetch("/api/ingest/fb", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    out.textContent = payload.group + " (" + payload.posts.length + " posts)\n" + JSON.stringify(await r.json(), null, 2);
+  } catch (e) {
+    out.textContent = "Failed: " + e;
+  }
+})();
+</script>

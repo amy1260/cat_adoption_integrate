@@ -1,0 +1,10 @@
+# Scraped posts and the database contain people's phone numbers and names; keep them local.
+data/
+static/uploads/
+__pycache__/
+*.pyc
+*.db
+*.db-shm
+*.db-wal
+.venv/
+fbvenv/
