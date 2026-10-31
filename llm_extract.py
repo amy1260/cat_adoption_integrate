@@ -4,29 +4,38 @@ The rule-based parser in parser.py is fast but guesses wrong on loose wording ("
 is not the cat's age; "混暹羅" is not a Siamese). This asks Claude for the same fields as strict JSON.
 The post's own wording always stays in `description`; only the filterable fields come from here.
 
-Needs credentials the Anthropic SDK can find (ANTHROPIC_API_KEY, or `ant auth login`). ingest.py uses it
-only with --llm; otherwise it keeps the rule-based fields.
+Two providers, picked by what credentials exist (or CATADOPT_LLM_PROVIDER=google|anthropic, or by the model
+name in CATADOPT_LLM_MODEL):
+  google     GEMINI_API_KEY (or GOOGLE_API_KEY), from https://aistudio.google.com/apikey; default model gemini-3.5-flash-lite
+  anthropic  ANTHROPIC_API_KEY (or `ant auth login`); default model claude-opus-5-5
+When both exist Google is used. ingest.py uses it only with --llm (fb_fetch.py uses it by itself); otherwise
+it keeps the rule-based fields.
 
 Back-fill the listings already in the database (asks before spending anything):
 
     python llm_extract.py --backfill
-    python llm_extract.py --backfill --model claude-haiku-5-5     # about 40x cheaper, a bit less careful
+    python llm_extract.py --backfill --model gemini-3.5-flash-lite
 """
 import argparse
 import hashlib
 import json
 import os
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+import requests
+
 import db
 from ages import group_of, refresh
 
-MODEL = os.environ.get("CATADOPT_LLM_MODEL", "claude-opus-5-5")
+DEFAULT_MODELS = {"google": "gemini-3.5-flash-lite", "anthropic": "claude-opus-5-5"}
 PROMPT_VERSION = "v1"  # bump when SYSTEM or SCHEMA change so cached answers are not reused
 PRICES = {"claude-opus-5-5": (4.0, 20.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-5-5": (0.1, 0.5)}  # $/1M tokens
+# Google's prices are not listed here: set CATADOPT_LLM_PRICE="<USD per 1M input tokens>,<USD per 1M output tokens>"
+# (from https://ai.google.dev/gemini-api/docs/pricing) to get dollar estimates; without it a run is capped by post count.
 
 REGIONS = ["臺北市", "新北市", "基隆市", "桃園市", "新竹市", "新竹縣", "苗栗縣", "臺中市", "彰化縣", "南投縣",
            "雲林縣", "嘉義市", "嘉義縣", "臺南市", "高雄市", "屏東縣", "宜蘭縣", "花蓮縣", "臺東縣", "澎湖縣",
@@ -83,10 +92,94 @@ SCHEMA = {
 }
 
 
-def has_credentials():
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+
+def _google_key():
+    return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+
+
+def _anthropic_credentials():
     """True when the Anthropic SDK can find a key or login."""
     return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
                 or (Path.home() / ".config" / "anthropic").exists())
+
+
+def provider_of(model):
+    return "google" if model.startswith(("gemini", "gemma")) else "anthropic"
+
+
+def provider():
+    """'google', 'anthropic', or None when no credentials are set."""
+    model = os.environ.get("CATADOPT_LLM_MODEL") or ""
+    want = provider_of(model) if model else (os.environ.get("CATADOPT_LLM_PROVIDER") or "").lower().replace("gemini", "google")
+    if want == "google":
+        return "google" if _google_key() else None
+    if want == "anthropic":
+        return "anthropic" if _anthropic_credentials() else None
+    return "google" if _google_key() else "anthropic" if _anthropic_credentials() else None
+
+
+def has_credentials():
+    return provider() is not None
+
+
+MODEL = os.environ.get("CATADOPT_LLM_MODEL") or DEFAULT_MODELS[provider() or "anthropic"]
+
+
+def _gemini_schema(node):
+    """The same schema in the form Gemini documents: a nullable value is {"type": [X, "null"]}, not an anyOf."""
+    if isinstance(node, list):
+        return [_gemini_schema(n) for n in node]
+    if not isinstance(node, dict):
+        return node
+    options = node.get("anyOf")
+    if options and len(options) == 2 and {"type": "null"} in options:
+        other = next(o for o in options if o != {"type": "null"})
+        return {**_gemini_schema(other), "type": [other["type"], "null"]}
+    return {k: _gemini_schema(v) for k, v in node.items()}
+
+
+GEMINI_SCHEMA = _gemini_schema(SCHEMA)
+
+
+class GoogleClient:
+    """Calls the Gemini API (generateContent) over plain HTTPS; the key goes in a header, never in the URL."""
+
+    def __init__(self, key=None):
+        self.key = key or _google_key()
+        self.session = requests.Session()
+
+    def generate(self, model, system, prompt, schema, attempts=5):
+        body = {"systemInstruction": {"parts": [{"text": system}]},
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {"responseMimeType": "application/json", "responseJsonSchema": schema,
+                                     "temperature": 0, "maxOutputTokens": 8192}}
+        for attempt in range(attempts):
+            r = self.session.post(GEMINI_URL.format(model=model), json=body, timeout=120,
+                                  headers={"x-goog-api-key": self.key})
+            if r.status_code in (429, 500, 503) and attempt < attempts - 1:   # rate limit or a busy moment: wait, retry
+                time.sleep(min(60, float(r.headers.get("Retry-After") or 4 * 2 ** attempt)))
+                continue
+            if not r.ok:
+                raise RuntimeError(f"Gemini API {r.status_code}: {r.text[:200]}")
+            return r.json()
+
+
+def _google_text(data):
+    """The answer text of a generateContent response, or None (blocked, cut off, or empty)."""
+    cands = data.get("candidates") or []
+    if not cands or cands[0].get("finishReason") not in (None, "STOP"):
+        return None
+    parts = (cands[0].get("content") or {}).get("parts") or []
+    return "".join(p.get("text", "") for p in parts if not p.get("thought")) or None
+
+
+def make_client(model):
+    if provider_of(model) == "google":
+        return GoogleClient()
+    import anthropic
+    return anthropic.Anthropic()
 
 
 def enabled():
@@ -103,12 +196,19 @@ def _key(text, posted_at, model):
 def extract(client, text, posted_at, model=None):
     """One post -> the extracted dict, or None when the model declined or answered unusably."""
     when = (posted_at or "unknown").replace("T", " ")
+    prompt = f"Posted at (Taiwan time): {when}\n\nPost:\n<<<\n{text}\n>>>"
+    if isinstance(client, GoogleClient):
+        body = _google_text(client.generate(model or MODEL, SYSTEM, prompt, GEMINI_SCHEMA))
+        try:
+            return json.loads(body) if body else None
+        except json.JSONDecodeError:
+            return None
     response = client.messages.create(
         model=model or MODEL,
         max_tokens=4000,
         system=SYSTEM,
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}},
-        messages=[{"role": "user", "content": f"Posted at (Taiwan time): {when}\n\nPost:\n<<<\n{text}\n>>>"}],
+        messages=[{"role": "user", "content": prompt}],
     )
     if response.stop_reason != "end_turn":  # refusal, or cut off at max_tokens
         return None
@@ -120,8 +220,30 @@ def extract(client, text, posted_at, model=None):
 
 
 def estimate_cost(n, model):
-    price_in, price_out = PRICES.get(model, PRICES["claude-opus-5-5"])
-    return n * (1900 * price_in + 350 * price_out) / 1_000_000
+    """Rough dollars for n posts (~1,900 tokens in, ~350 out each), or None when the model's price is unknown."""
+    prices = PRICES.get(model)
+    if prices is None and os.environ.get("CATADOPT_LLM_PRICE"):
+        try:
+            prices = tuple(float(x) for x in os.environ["CATADOPT_LLM_PRICE"].split(","))[:2]
+        except ValueError:
+            prices = None
+    if prices is None and provider_of(model) == "anthropic":
+        prices = PRICES["claude-opus-5-5"]
+    return None if prices is None or len(prices) < 2 else n * (1900 * prices[0] + 350 * prices[1]) / 1_000_000
+
+
+def cost_text(n, model):
+    cost = estimate_cost(n, model)
+    return f"about ${cost:.2f}" if cost is not None else "cost depends on Google's current price (set CATADOPT_LLM_PRICE for an estimate)"
+
+
+def affordable(max_usd=None, max_posts=None, model=None):
+    """How many posts one run may read given its caps (None: no limit)."""
+    limit = max_posts
+    cost = estimate_cost(1, model or MODEL)
+    if max_usd is not None and cost:
+        limit = min(limit, int(max_usd / cost)) if limit is not None else int(max_usd / cost)
+    return limit
 
 
 def extract_many(items, model=None, client=None, workers=4, say=print):
@@ -140,8 +262,7 @@ def extract_many(items, model=None, client=None, workers=4, say=print):
             todo.append(i)
     if todo:
         if client is None:
-            import anthropic
-            client = anthropic.Anthropic()
+            client = make_client(model)
         say(f"asking {model} about {len(todo)} posts ({len(items) - len(todo)} answered from cache)...")
 
         def work(i):
@@ -215,7 +336,7 @@ def backfill(model=None, limit=None, force=False, assume_yes=False, dry_run=Fals
         print("Nothing to do: every Facebook listing was already read by the model.")
         return
     fresh = sum(1 for r in rows if _key(r["description"] or "", r["posted_at"], model) not in paid)
-    print(f"{len(rows)} listings; {fresh} not yet asked. Model {model}: about ${estimate_cost(fresh, model):.2f} "
+    print(f"{len(rows)} listings; {fresh} not yet asked. Model {model}: {cost_text(fresh, model)} "
           f"(rough: ~1,900 tokens in and ~350 out per post).")
     if fresh and not assume_yes and input("Go ahead? [y/N] ").strip().lower() != "y":
         print("Cancelled; nothing was spent.")
@@ -248,7 +369,7 @@ def backfill(model=None, limit=None, force=False, assume_yes=False, dry_run=Fals
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--backfill", action="store_true", help="re-read Facebook listings already in the database")
-    ap.add_argument("--model", help=f"default {MODEL} (or set CATADOPT_LLM_MODEL)")
+    ap.add_argument("--model", help=f"default {MODEL} (or set CATADOPT_LLM_MODEL), e.g. gemini-3.5-flash-lite")
     ap.add_argument("--limit", type=int, help="only the newest N listings")
     ap.add_argument("--force", action="store_true", help="also redo listings the model already read")
     ap.add_argument("--yes", action="store_true", help="do not ask before spending")
@@ -257,6 +378,6 @@ if __name__ == "__main__":
     if not args.backfill:
         ap.error("nothing to do; use --backfill")
     if not has_credentials():
-        sys.exit("No Claude credentials found. Set ANTHROPIC_API_KEY (PowerShell: $env:ANTHROPIC_API_KEY=\"...\").")
+        sys.exit("No credentials found. Set GEMINI_API_KEY (Google) or ANTHROPIC_API_KEY (PowerShell: $env:GEMINI_API_KEY=\"...\").")
     db.init()
     backfill(args.model, args.limit, args.force, args.yes, args.dry_run)

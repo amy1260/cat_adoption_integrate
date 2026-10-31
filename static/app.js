@@ -108,8 +108,7 @@ function miniHtml(c) {
 
 // ---------- detail dialog ----------
 async function openDetail(id) {
-  const mineRec = mineGet(id);
-  const { ok, body: c } = await api("/api/cats/" + id, { headers: tokenHeader(mineRec) });
+  const { ok, body: c } = await api("/api/cats/" + id);
   if (!ok) return;
   const rows = [];
   const add = (k, v) => v && rows.push(`<dt>${esc(t(k))}</dt><dd>${v}</dd>`);
@@ -144,7 +143,7 @@ async function openDetail(id) {
       ${c.description ? `<div><div class="fieldset-title">${esc(t("description"))}</div><div class="desc">${esc(c.description)}</div></div>` : ""}
       ${c.source_url ? `<a href="${esc(c.source_url)}" target="_blank" rel="noopener noreferrer">${esc(t("view_source"))} ↗</a>` : ""}
       ${(c.also_listed || []).length ? `<div class="meta">🔗 ${esc(t("also_listed", { n: c.also_listed.length }))}${also.map((a) => ` · <a href="${esc(a.source_url)}" target="_blank" rel="noopener noreferrer">${esc(sourceLabel(a.source))}</a>`).join("")}</div>` : ""}
-      ${manageHtml(c, mineRec)}
+      ${manageHtml(c)}
       <div class="report">
         <button type="button" class="linkbtn" id="reportToggle" aria-expanded="false" aria-controls="reportForm">⚑ ${esc(t("rp_open"))}</button>
         <form id="reportForm" class="form" hidden novalidate>
@@ -165,7 +164,7 @@ async function openDetail(id) {
     </div>`;
   $("#dlgClose").onclick = () => $("#detail").close();
   wireReport(c.id);
-  wireManage(c, mineRec);
+  wireManage(c);
   if (!$("#detail").open) $("#detail").showModal();
 }
 
@@ -205,7 +204,7 @@ $("#detail").addEventListener("click", (e) => { if (e.target.id === "detail") e.
 
 // ---------- browse ----------
 const AGE_KEYS = ["kitten", "adult", "senior"];
-const SOURCE_KEYS = ["shelter", "fb_catparadise", "user"];
+const SOURCE_KEYS = ["shelter", "fb_catparadise"];
 
 function chipGroup(name, keys, labelFn) {
   return `<div class="chips" data-chips="${name}">${keys.map((k) => `<button type="button" class="chip${state.f[name] === k ? " on" : ""}" data-v="${k}">${esc(labelFn(k))}</button>`).join("")}</div>`;
@@ -226,7 +225,6 @@ async function renderBrowse() {
         <div class="stat"><b>${total}</b><span>${esc(t("stat_total"))}</span></div>
         <div class="stat"><b>${m.by_source.shelter || 0}</b><span>${esc(t("stat_shelter"))}</span></div>
         <div class="stat"><b>${fb}</b><span>${esc(t("stat_fb"))}</span></div>
-        <div class="stat"><b>${m.by_source.user || 0}</b><span>${esc(t("stat_user"))}</span></div>
       </div>
     </section>
     <div class="layout">
@@ -303,123 +301,6 @@ async function loadCats() {
   }
 }
 
-// ---------- upload ----------
-function renderUpload() {
-  const m = state.meta || { regions: Object.keys(REGION_EN) };
-  const opt = (v, l) => `<option value="${v}">${esc(l)}</option>`;
-  $("#app").innerHTML = `
-  <section class="panel">
-    <h1>${esc(t("up_title"))}</h1>
-    <p class="meta">${esc(t("up_intro"))}</p>
-    <form class="form" id="upForm" novalidate>
-      <div class="field"><label for="paste">${esc(t("up_paste"))}</label>
-        <textarea id="paste" placeholder="${esc(t("up_paste_ph"))}"></textarea>
-        <button class="btn ghost" id="detect" type="button" style="margin-top:8px">${esc(t("up_detect"))}</button>
-        <span class="meta" id="detected"></span></div>
-      <div class="row">
-        <div class="field"><label for="name">${esc(t("f_name"))}</label><input type="text" id="name" name="name" maxlength="40"></div>
-        <div class="field"><label for="region_f">${esc(t("region"))} *</label>
-          <select id="region_f" name="region"><option value="">—</option>${m.regions.map((r) => opt(r, regionLabel(r))).join("")}</select><div class="err" data-err="region"></div></div>
-        <div class="field"><label for="district">${esc(t("f_district"))}</label><input type="text" id="district" name="district"></div>
-      </div>
-      <div class="row">
-        <div class="field"><label for="sex_f">${esc(t("sex"))}</label>
-          <select id="sex_f" name="sex">${opt("U", t("sex_U"))}${opt("M", t("sex_M"))}${opt("F", t("sex_F"))}</select></div>
-        <div class="field"><label for="age_months">${esc(t("f_age_months"))}</label><input type="number" id="age_months" name="age_months" min="0" max="300"></div>
-        <div class="field"><label for="age_group_f">${esc(t("f_age_group"))}</label>
-          <select id="age_group_f" name="age_group">${opt("", t("age_unknown"))}${AGE_KEYS.map((k) => opt(k, t("age_" + k))).join("")}</select></div>
-      </div>
-      <div class="row">
-        <div class="field"><label for="breed_f">${esc(t("breed"))}</label>
-          <select id="breed_f" name="breed">${opt("", t("unknown"))}${Object.keys(BREED_LABEL).map((b) => opt(b, BREED_LABEL[b][isEn() ? 1 : 0])).join("")}</select></div>
-        <div class="field"><label for="color">${esc(t("f_color"))}</label><input type="text" id="color" name="color"></div>
-        <div class="field"><label for="chip">${esc(t("f_chip"))}</label><input type="text" id="chip" name="chip" inputmode="numeric"></div>
-      </div>
-      <div class="row">
-        <div class="field"><label for="neutered_f">${esc(t("neutered"))}</label>
-          <select id="neutered_f" name="neutered">${opt("", t("unknown"))}${opt("1", t("yes"))}${opt("0", t("no"))}</select></div>
-        <div class="field"><label for="vaccinated_f">${esc(t("vaccinated"))}</label>
-          <select id="vaccinated_f" name="vaccinated">${opt("", t("unknown"))}${opt("1", t("yes"))}${opt("0", t("no"))}</select></div>
-        <div class="field"><label for="fiv_f">${esc(t("fiv_felv"))}</label>
-          <select id="fiv_f" name="fiv_felv">${opt("", t("unknown"))}${opt("neg", t("neg"))}${opt("pos", t("pos"))}</select></div>
-      </div>
-      <div class="field"><label for="health_note">${esc(t("f_health_note"))}</label><input type="text" id="health_note" name="health_note"></div>
-      <div class="field"><label for="description">${esc(t("f_desc"))} *</label><textarea id="description" name="description"></textarea><div class="err" data-err="description"></div></div>
-      <div class="field"><label for="photo">${esc(t("f_photo"))}</label><input type="file" id="photo" name="photo" accept="image/*"><img class="preview-img" id="pv" alt="" hidden><div class="err" data-err="photo"></div></div>
-      <fieldset style="border:1px solid var(--line);border-radius:12px;padding:12px">
-        <legend>${esc(t("contact"))} *</legend>
-        <div class="row">
-          <div class="field"><label for="contact_name">${esc(t("f_name_contact"))} *</label><input type="text" id="contact_name" name="contact_name"><div class="err" data-err="contact_name"></div></div>
-          <div class="field"><label for="contact_phone">${esc(t("f_phone"))}</label><input type="tel" id="contact_phone" name="contact_phone"><div class="err" data-err="contact_phone"></div></div>
-          <div class="field"><label for="contact_line">${esc(t("f_line"))}</label><input type="text" id="contact_line" name="contact_line"></div>
-          <div class="field"><label for="contact_other">${esc(t("f_other"))}</label><input type="text" id="contact_other" name="contact_other"></div>
-        </div>
-        <div class="meta">${esc(t("contact_hint"))}</div><div class="err" data-err="contact"></div>
-      </fieldset>
-      <div id="result"></div>
-      <div><button class="btn" id="submit" type="submit">${esc(t("submit"))}</button></div>
-    </form>
-  </section>`;
-
-  const setVal = (id, v) => { if (v != null && v !== "") $("#" + id).value = v; };
-  $("#detect").onclick = async () => {
-    const text = $("#paste").value;
-    if (!text.trim()) return;
-    const { body: d } = await api("/api/cats/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
-    if (!d) return;
-    setVal("description", $("#description").value || text);
-    setVal("region_f", d.region); setVal("district", d.district); setVal("breed_f", d.breed); setVal("color", d.color);
-    setVal("age_months", d.age_months); setVal("age_group_f", d.age_group !== "unknown" ? d.age_group : "");
-    setVal("contact_phone", d.contact.phone); setVal("contact_line", d.contact.line); setVal("contact_other", d.contact.other);
-    if (d.neutered != null) $("#neutered_f").value = d.neutered ? "1" : "0";
-    if (d.vaccinated != null) $("#vaccinated_f").value = d.vaccinated ? "1" : "0";
-    if (d.fiv_felv) $("#fiv_f").value = d.fiv_felv;
-    $("#detected").textContent = " " + t("up_detected");
-  };
-  $("#photo").onchange = (e) => {
-    const f = e.target.files[0];
-    $("#pv").hidden = !f;
-    if (f) $("#pv").src = URL.createObjectURL(f);
-  };
-  $("#upForm").onsubmit = submitUpload;
-}
-
-async function submitUpload(e) {
-  e.preventDefault();
-  document.querySelectorAll("[data-err]").forEach((x) => (x.textContent = ""));
-  const btn = $("#submit");
-  btn.disabled = true; btn.textContent = t("submitting");
-  const fd = new FormData($("#upForm"));
-  const { status, body } = await api("/api/cats", { method: "POST", body: fd });
-  btn.disabled = false; btn.textContent = t("submit");
-  const out = $("#result");
-  if (status === 201 || status === 202) {
-    const rec = { id: body.id, token: body.edit_token, title: (fd.get("name") || fd.get("description") || "").toString().slice(0, 40) };
-    mineAdd(rec.id, rec.token, rec.title);
-    const link = manageUrl(rec);
-    out.innerHTML = `<div class="notice ${status === 201 ? "good" : "warn"}"><strong>${esc(t(status === 201 ? "ok_posted" : "pending_review"))}</strong>
-      <p><a href="#/mine">${esc(t("nav_mine"))}</a></p>
-      <div class="meta"><strong>${esc(t("manage_title"))}</strong><br>${esc(t("manage_hint"))}</div>
-      <div class="actions" style="margin-top:8px"><input type="text" readonly value="${esc(link)}" id="mlink" style="flex:1;min-width:200px"><button class="btn small" id="mcopy" type="button">${esc(t("act_copy"))}</button></div></div>`;
-    $("#mcopy").onclick = (e) => copyText(link, e.target);
-    $("#upForm").reset(); $("#pv").hidden = true;
-  } else if (status === 409) {
-    out.innerHTML = `<div class="notice bad"><strong>${esc(t("dup_blocked"))}</strong>
-      <div class="meta">${esc(t("dup_reason"))}: ${esc(t("r_" + body.reason))}</div>
-      <div style="margin-top:10px;max-width:340px">${miniHtml(body.existing)}</div></div>`;
-  } else if (status === 400 && body?.fields) {
-    for (const [k, v] of Object.entries(body.fields)) {
-      const el = document.querySelector(`[data-err="${k}"]`);
-      if (el) el.textContent = t("err_" + v);
-    }
-    out.innerHTML = "";
-    const first = document.querySelector("[data-err]:not(:empty)");
-    if (first) first.scrollIntoView({ block: "center" });
-  } else {
-    out.innerHTML = `<div class="notice bad">${esc(t("err_generic"))}</div>`;
-  }
-}
-
 // ---------- duplicate review (local admin only): choose which listing stays ----------
 async function renderReview() {
   const { ok, body } = await api("/api/review");
@@ -464,7 +345,7 @@ async function refreshAdmin() {
   const [r, rp, ph] = await Promise.all([api("/api/review/count"), api("/api/reports/count"), api("/api/photos/count")]);
   state.missingPhotos = ph.ok ? ph.body.missing : 0;
   state.isAdminReal = r.ok;
-  state.isAdmin = r.ok && !state.visitorPreview;  // preview shows the site as a poster or visitor sees it
+  state.isAdmin = r.ok && !state.visitorPreview;  // preview shows the site as a visitor sees it
   state.pendingReview = r.ok ? r.body.pending : 0;
   state.openReports = rp.ok ? rp.body.open : 0;
   renderNav();
@@ -472,8 +353,8 @@ async function refreshAdmin() {
 
 function renderNav() {
   const route = location.hash.replace(/^#/, "") || "/";
-  const items = [["/", "nav_browse", 0], ["/upload", "nav_upload", 0], ["/mine", "nav_mine", 0]];
-  if (state.isAdmin) items.push(["/review", "nav_review", state.pendingReview], ["/reports", "nav_reports", state.openReports], ["/photos", "nav_photos", state.missingPhotos], ["/edits", "nav_edits", 0]);
+  const items = [["/", "nav_browse", 0]];
+  if (state.isAdmin) items.push(["/review", "nav_review", state.pendingReview], ["/reports", "nav_reports", state.openReports], ["/photos", "nav_photos", state.missingPhotos], ["/edits", "nav_edits", 0], ["/fetch", "nav_fetch", 0]);
   $("#nav").innerHTML = items.map(([href, key, n]) =>
     `<a href="#${href}" class="${route === href ? "active" : ""}">${esc(t(key))}${n ? `<span class="badge">${n}</span>` : ""}</a>`).join("");
   $("#brandText").textContent = t("brand");
@@ -494,14 +375,12 @@ async function route() {
   renderNav();
   if ($("#detail").open) $("#detail").close();
   $("#app").onclick = null;
-  if (r === "/upload") renderUpload();
-  else if (r === "/mine") renderMine();
-  else if (r.startsWith("/edit/")) renderEdit(r.slice(6));
-  else if (r.startsWith("/manage/")) manageLink(r);
+  if (r.startsWith("/edit/")) renderEdit(r.slice(6));
   else if (r === "/edits" && state.isAdmin) renderEdits();
   else if (r === "/review" && state.isAdmin) renderReview();
   else if (r === "/reports" && state.isAdmin) renderReports();
   else if (r === "/photos" && state.isAdmin) renderPhotos();
+  else if (r === "/fetch" && state.isAdmin) renderFetch();
   else renderBrowse();
 }
 
@@ -583,55 +462,30 @@ async function renderPhotos() {
   };
 }
 
-// ---------- posters: their listings are remembered in this browser; the server checks the secret ----------
-const MINE_KEY = "catadopt-mine";
-const mineList = () => { try { return JSON.parse(localStorage.getItem(MINE_KEY) || "[]"); } catch (_) { return []; } };
-const mineSave = (list) => { try { localStorage.setItem(MINE_KEY, JSON.stringify(list.slice(0, 100))); } catch (_) { /* storage full or off */ } };
-const mineGet = (id) => mineList().find((m) => String(m.id) === String(id));
-function mineAdd(id, token, title) { mineSave([{ id, token, title, at: Date.now() }, ...mineList().filter((m) => String(m.id) !== String(id))]); }
-const manageUrl = (m) => `${location.origin}${location.pathname}#/manage/${m.id}/${m.token}`;
-const tokenHeader = (m) => (m ? { "X-Edit-Token": m.token } : {});
-async function copyText(text, btn) {
-  try { await navigator.clipboard.writeText(text); } catch (_) { prompt("", text); }
-  if (btn) { const o = btn.textContent; btn.textContent = t("copied"); setTimeout(() => { btn.textContent = o; }, 1500); }
-}
-async function manageLink(route) {  // #/manage/<id>/<secret>: restore a listing on another device
-  const [, , id, token] = route.split("/");
-  const { body } = await api("/api/mine", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: [{ id, token }] }) });
-  if (body && body.items && body.items.length) mineAdd(id, token, body.items[0].title);
-  location.hash = "#/mine";
-}
-
-// what the admin or the poster can do with one listing
-function manageHtml(c, rec) {
+// what the admin can do with one listing
+function manageHtml(c) {
   const notes = [];
   if (c.review === "pending") notes.push(`<span class="tag warn">${esc(t("mine_pending"))}</span>`);
   if (c.status === "closed") notes.push(`<span class="tag warn">${esc(t("mine_closed"))}</span>`);
   let buttons = "";
-  if (c.source === "shelter") buttons = "";
-  else if (state.isAdmin) {
+  if (state.isAdmin) {
     buttons = `<button class="btn small" data-act="edit" type="button">${esc(t("act_edit"))}</button>
       <button class="btn ghost small" data-act="history" type="button">${esc(t("act_history"))}</button>
       <button class="btn ghost small" data-act="${c.status === "closed" ? "relist" : "unlist"}" type="button">${esc(t(c.status === "closed" ? "act_relist" : "act_unlist"))}</button>`;
-  } else if (rec && c.source === "user") {
-    buttons = `<button class="btn small" data-act="edit" type="button">${esc(t("act_edit"))}</button>
-      ${c.status === "closed" ? "" : `<button class="btn ghost small" data-act="unlist" type="button">${esc(t("act_unlist"))}</button>`}
-      <button class="btn ghost small" data-act="copy" type="button">${esc(t("act_copy"))}</button>`;
   }
   if (!notes.length && !buttons) return "";
   return `<div class="manage">${notes.join(" ")}<div class="actions">${buttons}</div><div id="histbox"></div></div>`;
 }
-function wireManage(c, rec) {
+function wireManage(c) {
   const d = $("#detail");
   d.querySelectorAll("[data-act]").forEach((btn) => {
     btn.onclick = async () => {
-      const act = btn.dataset.act, hdr = state.isAdmin ? {} : tokenHeader(rec);
+      const act = btn.dataset.act;
       if (act === "edit") { d.close(); location.hash = "#/edit/" + c.id; }
-      else if (act === "copy") copyText(manageUrl(rec), btn);
       else if (act === "history") showHistory(c.id);
       else if (act === "unlist") {
         if (!confirm(t("unlist_confirm"))) return;
-        await api("/api/cats/" + c.id, { method: "DELETE", headers: hdr });
+        await api("/api/cats/" + c.id, { method: "DELETE" });
         d.close(); await refreshAdmin(); route();
       } else if (act === "relist") {
         await api("/api/cats/" + c.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "open" }) });
@@ -684,41 +538,49 @@ async function renderEdits() {
   };
 }
 
-// ---------- my listings (this browser) ----------
-async function renderMine() {
-  const recs = mineList();
-  $("#app").innerHTML = `<section class="panel"><h1>${esc(t("mine_title"))}</h1><p class="meta">${esc(t("mine_intro"))}</p><div id="minebox"><p class="meta">…</p></div></section>`;
-  const { body } = recs.length ? await api("/api/mine", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: recs.map(({ id, token }) => ({ id, token })) }) }) : { body: { items: [] } };
-  const items = (body && body.items) || [];
-  $("#minebox").innerHTML = items.length ? items.map((c) => `
-    <div class="review-item" data-id="${c.id}">
-      <div style="max-width:380px">${miniHtml(c)}</div>
-      <div>${c.pending ? `<span class="tag warn">${esc(t("mine_pending"))}</span>` : ""}${c.closed ? `<span class="tag warn">${esc(t("mine_closed"))}</span>` : ""}</div>
-      <div class="actions"><button class="btn small" data-m="edit" type="button">${esc(t("act_edit"))}</button>
-        ${c.closed ? "" : `<button class="btn ghost small" data-m="unlist" type="button">${esc(t("act_unlist"))}</button>`}
-        <button class="btn ghost small" data-m="copy" type="button">${esc(t("act_copy"))}</button></div>
-    </div>`).join("") : `<p class="empty">${esc(t("mine_empty"))}</p>`;
-  $("#minebox").onclick = async (e) => {
-    const b = e.target.closest("[data-m]");
-    if (!b) return;
-    const id = b.closest("[data-id]").dataset.id, rec = mineGet(id);
-    if (b.dataset.m === "edit") location.hash = "#/edit/" + id;
-    else if (b.dataset.m === "copy") copyText(manageUrl(rec), b);
-    else if (b.dataset.m === "unlist" && confirm(t("unlist_confirm"))) { await api("/api/cats/" + id, { method: "DELETE", headers: tokenHeader(rec) }); renderMine(); }
+// ---------- Facebook batch fetch (admin only): the admin decides when; each batch continues where the last stopped ----------
+let fetchTimer = null;
+const twTime = (iso) => (iso ? new Date(iso).toLocaleString(isEn() ? "en-GB" : "zh-TW", { timeZone: "Asia/Taipei", hour12: false }) : t("unknown"));
+async function renderFetch() {
+  clearTimeout(fetchTimer);
+  const { ok, body: s } = await api("/api/admin/fb-fetch");
+  if (!ok) { $("#app").innerHTML = `<section class="panel"><p>403</p></section>`; return; }
+  const r = s.last_result;
+  const runs = (s.runs || []).map((x) => `<li class="meta">${esc(x.started_at.replace("T", " "))} · ${esc(x.status || "")} · ${esc(t("ff_posts_n", { n: x.posts ?? 0 }))} · US$${x.cost_usd == null ? "?" : Number(x.cost_usd).toFixed(3)}</li>`).join("");
+  $("#app").innerHTML = `<section class="panel">
+    <h1>${esc(t("ff_title"))}</h1>
+    <p class="meta">${esc(t("ff_intro"))}</p>
+    ${s.token ? "" : `<div class="notice bad">${esc(t("ff_no_token"))}</div>`}
+    <div class="notice">${esc(t("ff_next"))}<strong>${esc(twTime(s.checkpoint))}</strong>${s.llm ? ` · ${esc(t("ff_llm", { m: s.llm }))}` : ` · ${esc(t("ff_no_llm"))}`}</div>
+    <div class="row" style="align-items:flex-end;margin-top:12px">
+      <div class="field"><label for="ffn">${esc(t("ff_count"))}</label><input id="ffn" type="number" min="1" max="1000" value="${s.batch}"></div>
+      <div class="field"><button class="btn good" id="ffgo" type="button" ${s.running || !s.token ? "disabled" : ""}>${esc(t(s.running ? "ff_running" : "ff_go"))}</button></div>
+    </div>
+    <div id="ffres" style="margin-top:12px">${s.error ? `<div class="notice bad">${esc(s.error)}</div>` : ""}${r && !s.running ? `<div class="notice good">${esc(t("ff_done", { got: r.fetched, used: r.used, added: r.added, cost: Number(r.cost_usd || 0).toFixed(3), next: twTime(r.checkpoint) }))}</div>` : ""}</div>
+    ${s.log && s.log.length ? `<pre class="meta" style="white-space:pre-wrap;max-height:260px;overflow:auto">${esc(s.log.join("\n"))}</pre>` : ""}
+    ${runs ? `<h2 style="font-size:1rem">${esc(t("ff_runs"))}</h2><ul>${runs}</ul>` : ""}
+  </section>`;
+  $("#ffgo").onclick = async () => {
+    $("#ffgo").disabled = true;
+    const res = await api("/api/admin/fb-fetch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ posts: Number($("#ffn").value) || s.batch }) });
+    if (!res.ok) $("#ffres").innerHTML = `<div class="notice bad">${esc((res.body && res.body.error) || res.status)}</div>`;
+    renderFetch();
   };
+  if (s.running) fetchTimer = setTimeout(() => { if (location.hash === "#/fetch") renderFetch(); }, 3000);
 }
 
-// ---------- edit form: the admin sees every field, a poster only their own ----------
+// ---------- edit form (admin only) ----------
 async function renderEdit(id) {
-  const rec = mineGet(id), admin = state.isAdmin;
-  const { ok, body: c } = await api("/api/cats/" + id, { headers: admin ? {} : tokenHeader(rec) });
-  if (!ok || c.source === "shelter" || (!admin && !(rec && c.source === "user"))) { $("#app").innerHTML = `<section class="panel"><div class="notice bad">${esc(t("no_perm"))}</div></section>`; return; }
+  const admin = state.isAdmin;
+  const { ok, body: c } = await api("/api/cats/" + id);
+  if (!ok || !admin) { $("#app").innerHTML = `<section class="panel"><div class="notice bad">${esc(t("no_perm"))}</div></section>`; return; }
   const m = state.meta || { regions: Object.keys(REGION_EN) };
   const o = (v, l, sel) => `<option value="${esc(v)}"${sel ? " selected" : ""}>${esc(l)}</option>`;
   const tri = (k) => `<select id="e_${k}">${o("", t("unknown"), c[k] == null)}${o("1", t("yes"), c[k] === true)}${o("0", t("no"), c[k] === false)}</select>`;
   const txt = (k, label, type = "text") => `<div class="field"><label for="e_${k}">${esc(label)}</label><input type="${type}" id="e_${k}" value="${esc(c[k] ?? "")}"></div>`;
   $("#app").innerHTML = `<section class="panel"><h1>${esc(t(admin ? "edit_admin_title" : "edit_title"))}</h1>
     <p class="meta">${esc(titleOf(c))}${admin ? " · " + esc(t("hist_intro")) : ""}</p>
+    ${c.source === "shelter" ? `<div class="notice warn">${esc(t("edit_shelter_note"))}</div>` : ""}
     <form class="form" id="eform" novalidate>
       <div class="row">${txt("name", t("f_name"))}
         <div class="field"><label for="e_region">${esc(t("region"))}</label><select id="e_region"><option value="">—</option>${m.regions.map((r) => o(r, regionLabel(r), c.region === r)).join("")}</select><div class="err" data-err="region"></div></div>
@@ -742,7 +604,7 @@ async function renderEdit(id) {
         ${txt("source_url", t("f_source_url"), "url")}
         <div class="field"><span class="fieldset-title">${esc(t("f_tags"))}</span><div class="chips" id="e_tags">${Object.keys(HEALTH_LABEL).map((k) => `<label class="check"><input type="checkbox" value="${k}"${(c.health_tags || []).includes(k) ? " checked" : ""}> ${esc(HEALTH_LABEL[k][isEn() ? 1 : 0])}</label>`).join("")}</div></div></fieldset>` : ""}
       <div id="eres"></div>
-      <div class="actions"><button class="btn" id="esave" type="submit">${esc(t("save"))}</button><a class="btn ghost" href="#/${admin ? "" : "mine"}" style="text-decoration:none">${esc(t("close"))}</a></div>
+      <div class="actions"><button class="btn" id="esave" type="submit">${esc(t("save"))}</button><a class="btn ghost" href="#/" style="text-decoration:none">${esc(t("close"))}</a></div>
     </form></section>`;
   $("#eform").onsubmit = async (ev) => {
     ev.preventDefault();
@@ -754,13 +616,12 @@ async function renderEdit(id) {
     if (admin) Object.assign(body, { title: v("title"), breed_text: v("breed_text"), age_text: v("age_text"), location_text: v("location_text"), available_from: v("available_from"),
       source_url: v("source_url"), status: v("status"), health_tags: [...document.querySelectorAll("#e_tags input:checked")].map((x) => x.value) });
     const btn = $("#esave"); btn.disabled = true;
-    const hdr = { "Content-Type": "application/json", ...(admin ? {} : tokenHeader(rec)) };
-    const r = await api("/api/cats/" + id, { method: "PUT", headers: hdr, body: JSON.stringify(body) });
+    const r = await api("/api/cats/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     let photoFailed = false;
     const file = $("#e_photo").files[0];
     if (r.ok && file) {
       const fd = new FormData(); fd.append("photo", file);
-      photoFailed = !(await api(`/api/cats/${id}/photo`, { method: "POST", headers: admin ? {} : tokenHeader(rec), body: fd })).ok;
+      photoFailed = !(await api(`/api/cats/${id}/photo`, { method: "POST", body: fd })).ok;
     }
     btn.disabled = false;
     if (r.ok) { await refreshAdmin(); $("#eres").innerHTML = `<div class="notice ${photoFailed ? "warn" : "good"}">${esc(t(photoFailed ? "ph_failed" : "saved"))}</div>`; }

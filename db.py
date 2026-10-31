@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS cats (
     review TEXT,                     -- NULL | pending | cleared | merged
     extracted_by TEXT,               -- rules | llm | user | open-data: where the fields came from
     edit_token_hash TEXT,            -- sha256 of the poster's secret; the secret itself is never stored
+    locked TEXT,                     -- JSON list of fields the admin changed by hand; the shelter sync leaves them alone
+    photo_checked_at TEXT,           -- last time the shelter's own page was searched for a photo
+    shelter_state TEXT,              -- 是否開放認領養 as the shelter's own page shows it (e.g. 適合認養, ※已出所)
+    state_checked_at TEXT,
+    released INTEGER NOT NULL DEFAULT 0,   -- 1: the animal has left the shelter, so it is no longer listed
     UNIQUE (source, source_id)
 );
 CREATE INDEX IF NOT EXISTS idx_cats_region ON cats(region);
@@ -79,6 +84,32 @@ CREATE TABLE IF NOT EXISTS cat_edits (
     reverted_by INTEGER              -- the edit that undid this one (-1: undone, nothing left to change)
 );
 CREATE INDEX IF NOT EXISTS idx_cat_edits_cat ON cat_edits(cat_id);
+
+-- Every Facebook post a batch has taken (not only the cat listings), so the next batch, which starts at the
+-- last one's posting time, never imports the same post twice.
+CREATE TABLE IF NOT EXISTS fb_posts_seen (
+    url TEXT PRIMARY KEY,
+    time TEXT NOT NULL               -- ISO time of the post, UTC
+);
+CREATE INDEX IF NOT EXISTS idx_fb_posts_seen_time ON fb_posts_seen(time);
+
+-- One row per Apify run started by fb_fetch.py: the window it asked for, what it returned and what it cost.
+CREATE TABLE IF NOT EXISTS apify_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    kind TEXT NOT NULL,              -- batch (latest | backfill: the earlier daily job)
+    run_id TEXT,
+    status TEXT,
+    posts INTEGER,
+    cost_usd REAL,
+    note TEXT
+);
+
+-- Small settings and progress markers, e.g. fb_checkpoint: where the next Facebook batch starts (fb_fetch.py).
+CREATE TABLE IF NOT EXISTS kv (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 
 -- Answers the language model already gave, so a re-run never pays for the same post twice.
 CREATE TABLE IF NOT EXISTS llm_cache (
@@ -118,7 +149,9 @@ def init():
     with connect() as conn:
         conn.executescript(SCHEMA)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(cats)")}
-        for col, ddl in (("review", "TEXT"), ("age_months_post", "INTEGER"), ("extracted_by", "TEXT"), ("edit_token_hash", "TEXT")):
+        for col, ddl in (("review", "TEXT"), ("age_months_post", "INTEGER"), ("extracted_by", "TEXT"), ("edit_token_hash", "TEXT"),
+                         ("locked", "TEXT"), ("photo_checked_at", "TEXT"), ("shelter_state", "TEXT"),
+                         ("state_checked_at", "TEXT"), ("released", "INTEGER NOT NULL DEFAULT 0")):
             if col not in cols:  # databases created before this column existed
                 conn.execute(f"ALTER TABLE cats ADD COLUMN {col} {ddl}")
         dcols = {r["name"] for r in conn.execute("PRAGMA table_info(dup_candidates)")}

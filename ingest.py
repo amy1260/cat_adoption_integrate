@@ -74,13 +74,26 @@ def _store(conn, source, cat, photo, stats):
         stats["added"] += 1
 
 
-def _llm_pass(entries, stats):
-    """Let Claude read each post (when credentials exist): drop what is not a listing, fix the fields."""
-    if not entries or not llm_extract.enabled():
+def _llm_pass(entries, stats, llm=None, max_usd=None, max_posts=None):
+    """Let the language model (Google Gemini or Claude, see llm_extract.py) read each post when credentials exist:
+    drop what is not a listing, fix the fields. `llm` True/False overrides the opt-in (python ingest.py --llm /
+    CATADOPT_LLM=1); `max_usd` and `max_posts` cap what one pass may read, the posts beyond keep their rule-based
+    reading."""
+    on = llm_extract.enabled() if llm is None else (llm and llm_extract.has_credentials())
+    if not entries or not on:
         return entries
-    print(f"reading {len(entries)} posts with Claude: about ${llm_extract.estimate_cost(len(entries), llm_extract.MODEL):.2f} "
-          f"with {llm_extract.MODEL} (answers already paid for are reused)")
-    results = llm_extract.extract_many([(c["description"], c["posted_at"]) for c, _ in entries])
+    rest = []
+    n = llm_extract.affordable(max_usd, max_posts)
+    if n is not None:
+        entries, rest = entries[:n], entries[n:]
+        stats["llm_over_budget"] += len(rest)
+    print(f"reading {len(entries)} posts with {llm_extract.MODEL}: {llm_extract.cost_text(len(entries), llm_extract.MODEL)} "
+          f"(answers already paid for are reused)")
+    try:
+        results = llm_extract.extract_many([(c["description"], c["posted_at"]) for c, _ in entries])
+    except Exception as e:  # e.g. the key is wrong: the posts are still listed, read by the rules
+        print(f"the model could not be used ({type(e).__name__}: {str(e)[:150]}); keeping the rule-based reading")
+        results = [None] * len(entries)
     kept = []
     for (cat, photo), ex in zip(entries, results):
         if ex is None:  # the model failed on this post: keep the rule-based reading
@@ -88,16 +101,17 @@ def _llm_pass(entries, stats):
             kept.append((cat, photo))
             continue
         cat, reason = llm_extract.apply(cat, ex)
+        stats["llm_read"] += 1
         if cat is None:
             stats[reason] += 1
         else:
             kept.append((cat, photo))
-    return kept
+    return kept + rest
 
 
-def _finish(source, entries, stats):
+def _finish(source, entries, stats, llm=None, max_usd=None, max_posts=None):
     """Read the parsed posts with the model, store them, then bring every listing's age up to date."""
-    entries = _llm_pass(entries, stats)
+    entries = _llm_pass(entries, stats, llm, max_usd, max_posts)
     with db.connect() as conn:
         for cat, photo in entries:
             _store(conn, source, cat, photo, stats)
@@ -147,12 +161,13 @@ def _field(item, path):
     return cur
 
 
-def ingest_apify(group, items, save_raw=True):
+def ingest_apify(group, items, save_raw=True, llm=None, max_usd=None, max_posts=None):
     """Import items from the Apify Facebook Groups Scraper dataset.
 
     A reshare has empty `text` and the real post in `sharedPost`; the original author and URL are
     used so several reshares of one post collapse into a single listing. `image_url` (added by
     apify_fetch.py) or the raw `attachments` give the post's first photo, which is downloaded here.
+    `llm`, `max_usd` and `max_posts` are passed to the model reading step (see _llm_pass).
     """
     if group not in GROUPS:
         raise ValueError(f"unknown group {group}")
@@ -182,17 +197,17 @@ def ingest_apify(group, items, save_raw=True):
             stats[reason] += 1
         else:
             entries.append((cat, it.get("image_url") or first_image_url(it)))
-    _finish(source, entries, stats)
+    _finish(source, entries, stats, llm, max_usd, max_posts)
     return dict(stats)
 
 
 if __name__ == "__main__":
     db.init()
     args = [a for a in sys.argv[1:] if a != "--llm"]
-    if "--llm" in sys.argv[1:]:  # explicit consent to pay for reading each post with Claude
+    if "--llm" in sys.argv[1:]:  # explicit consent to pay for reading each post with the language model
         os.environ["CATADOPT_LLM"] = "1"
         if not llm_extract.has_credentials():
-            sys.exit("--llm needs Claude credentials: set ANTHROPIC_API_KEY first.")
+            sys.exit("--llm needs credentials: set GEMINI_API_KEY (Google) or ANTHROPIC_API_KEY first.")
     # PowerShell does not expand wildcards for programs, so do it here
     paths = sorted(p for arg in args for p in (glob.glob(arg) or [arg]))
     if not paths or not all(Path(p).exists() for p in paths):

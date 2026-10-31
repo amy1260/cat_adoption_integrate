@@ -4,10 +4,7 @@ Every change to a listing goes through apply_edit(), which writes one row to cat
 values before and after. revert_edit() puts the old values back as a new edit, so a revert can itself
 be reverted. The history is only ever shown to the admin.
 """
-import hashlib
-import hmac
 import json
-import secrets
 from datetime import datetime
 
 from ages import MONTH_DAYS, group_of
@@ -21,12 +18,10 @@ TEXT_LIMITS = {"title": 80, "name": 40, "breed": 40, "breed_text": 80, "color": 
                "district": 40, "location_text": 200, "contact_name": 80, "contact_phone": 30, "contact_line": 60,
                "contact_other": 200, "description": 2000, "source_url": 500, "available_from": 20, "photo": 300,
                "photo_hash": 32}
-# What the person who posted a listing may change (never status beyond taking it down, source or links).
-OWNER_FIELDS = {"name", "title", "breed", "color", "sex", "age_now", "age_group", "neutered", "vaccinated", "fiv_felv",
+# What the admin may change. Photos only change through the upload endpoint.
+ADMIN_FIELDS = {"name", "title", "breed", "color", "sex", "age_now", "age_group", "neutered", "vaccinated", "fiv_felv",
                 "health_tags", "health_note", "region", "district", "contact_name", "contact_phone", "contact_line",
-                "contact_other", "description"}
-# Photos only change through the upload endpoint, and taking a listing down or back up is DELETE / the admin's call.
-ADMIN_FIELDS = OWNER_FIELDS | {"breed_text", "age_text", "location_text", "source_url", "available_from", "status"}
+                "contact_other", "description", "breed_text", "age_text", "location_text", "source_url", "available_from", "status"}
 # Copied into the listing that is kept when two listings are merged, but only where it is still blank.
 FILL_FIELDS = ["photo", "photo_hash", "contact_phone", "contact_line", "contact_other", "region", "district", "color",
                "breed", "breed_text", "health_note", "name", "source_url", "age_text", "location_text"]
@@ -37,21 +32,6 @@ class EditError(ValueError):
     def __init__(self, field, code="invalid"):
         super().__init__(f"{field}: {code}")
         self.field, self.code = field, code
-
-
-def new_token():
-    """A secret for the poster. Returns (secret to hand over once, hash to keep)."""
-    secret = secrets.token_urlsafe(24)
-    return secret, hash_token(secret)
-
-
-def hash_token(secret):
-    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
-
-
-def token_ok(row, secret):
-    stored = row["edit_token_hash"] if row is not None else None
-    return bool(stored and secret and hmac.compare_digest(stored, hash_token(secret)))
 
 
 def _tri(v):
@@ -72,12 +52,15 @@ def elapsed_months(posted_at, now=None):
     return max(0, int(((now or datetime.now()) - posted).days / MONTH_DAYS))
 
 
-def normalize(changes, allowed, posted_at=None):
-    """Validate a dict of edits and turn it into database columns. Raises EditError on the first bad field."""
+def normalize(changes, allowed, posted_at=None, current=None):
+    """Validate a dict of edits and turn it into database columns. Raises EditError on the first bad field.
+    A value that is sent back exactly as stored is never refused (imported data is not always tidy)."""
     out = {}
     for key, value in changes.items():
         if key not in allowed:
             raise EditError(key, "not_allowed")
+        if current is not None and key in current.keys() and key in TEXT_LIMITS and (value or None) == (current[key] or None):
+            continue
         try:
             if key in TEXT_LIMITS:
                 v = None if value is None else str(value).strip()
@@ -142,7 +125,20 @@ def apply_edit(conn, cat_id, columns, actor, note=None):
         "INSERT INTO cat_edits (cat_id, actor, note, before, after, created_at) VALUES (?,?,?,?,?,?)",
         (cat_id, actor, note, json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False),
          datetime.now().isoformat(timespec="seconds")))
+    if row["source"] == "shelter":
+        _relock(conn, cat_id, row["locked"], after)
     return cur.lastrowid
+
+
+def _relock(conn, cat_id, locked, touched):
+    """Shelter listings are re-synced from the open data. Fields the admin changed are remembered so the sync
+    does not undo them; a field put back to what it was before the first edit is let go again."""
+    original = {}
+    for e in conn.execute("SELECT before FROM cat_edits WHERE cat_id=? ORDER BY id", (cat_id,)):
+        for k, v in json.loads(e["before"]).items():
+            original.setdefault(k, v)
+    keep = (set(json.loads(locked or "[]")) | set(touched)) - {k for k, v in touched.items() if original.get(k) == v}
+    conn.execute("UPDATE cats SET locked=? WHERE id=?", (json.dumps(sorted(keep)) if keep else None, cat_id))
 
 
 def revert_edit(conn, edit_id, note=None):

@@ -1,29 +1,23 @@
 import hashlib
-import io
 import json
-import re
+import os
 import threading
 import time
-import uuid
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
-from PIL import Image
 
 import ages
 import db
 import edits
+import fb_fetch
 import ingest
 import shelter
-from dedupe import find_duplicate
-from images import dhash, download, save_bytes
-from parser import parse_age, parse_breed_color, parse_contact, parse_health, parse_region
+from images import download, save_bytes
 
 BASE = Path(__file__).resolve().parent
-UPLOAD_DIR = BASE / "static" / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
@@ -35,11 +29,12 @@ REGIONS = ["臺北市", "新北市", "基隆市", "桃園市", "新竹市", "新
 
 def row_to_dict(r):
     d = dict(r)
-    d.pop("edit_token_hash", None)
+    for k in ("edit_token_hash", "locked", "photo_checked_at", "state_checked_at", "released"):
+        d.pop(k, None)
     d["health_tags"] = json.loads(d["health_tags"] or "[]")
     for k in ("neutered", "vaccinated"):
         d[k] = None if d[k] is None else bool(d[k])
-    d["needs_photo"] = d["source"] != "shelter" and not d["photo"]  # shown to the admin, who can add one by hand
+    d["needs_photo"] = not d["photo"]  # shown to the admin, who can add one by hand
     return d
 
 
@@ -66,8 +61,9 @@ def list_cats():
         params.append(a["fiv"])
     if a.get("q"):
         like = f"%{a['q']}%"
-        where.append("(title LIKE ? OR description LIKE ? OR color LIKE ? OR breed_text LIKE ? OR contact_name LIKE ?)")
-        params += [like] * 5
+        where.append("(title LIKE ? OR description LIKE ? OR color LIKE ? OR breed_text LIKE ? OR contact_name LIKE ? "
+                     "OR shelter_no LIKE ? OR chip LIKE ? OR name LIKE ?)")
+        params += [like] * 8
     sql_where = " AND ".join(where)
     order = {"region": "region, posted_at DESC", "age": "age_months IS NULL, age_months"}.get(
         a.get("sort"), "COALESCE(posted_at, created_at) DESC")
@@ -87,13 +83,11 @@ def _is_local():
 
 
 def _actor_for(conn, cat_id):
-    """Who is asking to change this listing: ("owner", row) with the poster's secret, ("admin", row) from the
-    machine running the site, otherwise (None, row) and the caller answers 403. (None, None) if it does not exist."""
+    """Only the admin (the machine running the site) may change a listing: ("admin", row), otherwise (None, row)
+    and the caller answers 403. (None, None) if it does not exist."""
     row = conn.execute("SELECT * FROM cats WHERE id=?", (cat_id,)).fetchone()
     if row is None:
         return None, None
-    if edits.token_ok(row, request.headers.get("X-Edit-Token", "")):
-        return "owner", row
     return ("admin" if _is_local() else None), row
 
 
@@ -101,9 +95,9 @@ def _actor_for(conn, cat_id):
 def get_cat(cat_id):
     with db.connect() as conn:
         row = conn.execute("SELECT * FROM cats WHERE id=?", (cat_id,)).fetchone()
-        # waiting for review or taken down: only the poster (with the secret) and the admin may open it
+        # waiting for review or taken down: only the admin may open it
         withheld = row and (row["review"] == "pending" or row["status"] == "closed")
-        if not row or (withheld and not _is_local() and not edits.token_ok(row, request.headers.get("X-Edit-Token", ""))):
+        if not row or (withheld and not _is_local()):
             return jsonify({"error": "not_found"}), 404
         also = conn.execute(
             "WITH RECURSIVE tree(id) AS (SELECT id FROM cats WHERE dup_of=? UNION SELECT c.id FROM cats c JOIN tree t ON c.dup_of=t.id) "
@@ -125,95 +119,6 @@ def meta():
         breeds = {r[0]: r[1] for r in conn.execute(
             f"SELECT breed, COUNT(*) FROM cats WHERE {base} AND breed IS NOT NULL GROUP BY breed")}
     return jsonify({"regions": REGIONS, "by_source": by_source, "by_region": by_region, "breeds": breeds})
-
-
-@app.post("/api/cats")
-def upload_cat():
-    f = request.form
-    errors = {}
-    description = (f.get("description") or "").strip()
-    phone = (f.get("contact_phone") or "").strip() or None
-    line = (f.get("contact_line") or "").strip() or None
-    other = (f.get("contact_other") or "").strip() or None
-    name = (f.get("contact_name") or "").strip()
-    region = f.get("region") or None
-    sex = f.get("sex") if f.get("sex") in ("M", "F") else "U"
-    if len(description) < 10:
-        errors["description"] = "too_short"
-    if not name:
-        errors["contact_name"] = "required"
-    if not (phone or line or other):
-        errors["contact"] = "required"
-    if region not in REGIONS:
-        errors["region"] = "required"
-    if phone and not re.fullmatch(r"[\d\-\s()+]{8,16}", phone):
-        errors["contact_phone"] = "invalid"
-    photo_file = request.files.get("photo")
-    photo_hash = photo_path = None
-    if photo_file and photo_file.filename:
-        try:
-            img = Image.open(io.BytesIO(photo_file.read()))
-            img.load()
-        except Exception:
-            errors["photo"] = "invalid"
-        else:
-            photo_hash = dhash(img)
-            img = img.convert("RGB")
-            img.thumbnail((1200, 1200))
-            fname = f"{uuid.uuid4().hex}.jpg"
-            photo_path = f"/static/uploads/{fname}"
-    if errors:
-        return jsonify({"error": "validation", "fields": errors}), 400
-
-    age_months = None
-    age_group = f.get("age_group") if f.get("age_group") in ("kitten", "adult", "senior") else "unknown"
-    if f.get("age_months", "").isdigit():
-        age_months = int(f["age_months"])
-        age_group = "kitten" if age_months < 12 else "senior" if age_months >= 84 else "adult"
-    breed = f.get("breed") or None
-    tags = parse_health(description)["tags"]
-    cat = {
-        "source": "user", "source_id": uuid.uuid4().hex, "source_url": None,
-        "title": (f.get("name") or description.split("\n")[0])[:80], "name": (f.get("name") or None),
-        "breed": breed, "breed_text": None, "color": (f.get("color") or "").strip() or None,
-        "sex": sex, "age_group": age_group, "age_months": age_months, "age_months_post": age_months,
-        "age_text": None, "extracted_by": "user",
-        "neutered": {"1": 1, "0": 0}.get(f.get("neutered")), "vaccinated": {"1": 1, "0": 0}.get(f.get("vaccinated")),
-        "fiv_felv": f.get("fiv_felv") if f.get("fiv_felv") in ("neg", "pos") else None,
-        "health_tags": json.dumps(tags), "health_note": (f.get("health_note") or "").strip() or None,
-        "region": region, "district": (f.get("district") or "").strip() or None, "location_text": None,
-        "contact_name": name, "contact_phone": phone, "contact_line": line, "contact_other": other,
-        "description": description[:2000], "photo": photo_path, "photo_hash": photo_hash,
-        "chip": (f.get("chip") or "").strip() or None, "shelter_no": None, "available_from": None,
-        "posted_at": datetime.now().isoformat(timespec="minutes"),
-    }
-    with db.connect() as conn:
-        dup, why, kind = find_duplicate(conn, cat)
-        if kind == "hard":
-            return jsonify({"error": "duplicate", "reason": why, "existing": row_to_dict(dup)}), 409
-        if photo_path:
-            img.save(UPLOAD_DIR / Path(photo_path).name, "JPEG", quality=85)
-        new_id = ingest.insert_cat(conn, cat)
-        # The poster's secret is handed over once; only its hash is kept, so nobody else can edit this listing.
-        secret, hashed = edits.new_token()
-        conn.execute("UPDATE cats SET edit_token_hash=? WHERE id=?", (hashed, new_id))
-        if kind == "review":
-            db.flag_for_review(conn, new_id, dup["id"], why)
-            return jsonify({"id": new_id, "edit_token": secret, "status": "pending_review", "reason": why}), 202
-    return jsonify({"id": new_id, "edit_token": secret}), 201
-
-
-@app.post("/api/cats/preview")
-def preview_parse():
-    """Auto-fill helper: paste a post, get the detected fields back."""
-    text = (request.get_json(silent=True) or {}).get("text", "")
-    months, group, age_text = parse_age(text)
-    breed, color = parse_breed_color(text)
-    region, district = parse_region(text)
-    health = parse_health(text)
-    return jsonify({"age_months": months, "age_group": group, "breed": breed, "color": color, "region": region,
-                    "district": district, "contact": parse_contact(text), "neutered": health["neutered"],
-                    "vaccinated": health["vaccinated"], "fiv_felv": health["fiv_felv"]})
 
 
 def local_only(fn):
@@ -340,7 +245,7 @@ def photos_missing():
     """Listings that stay up without a photo, so the admin can add one by hand."""
     with db.connect() as conn:
         rows = conn.execute(
-            f"SELECT * FROM cats WHERE source!='shelter' AND photo IS NULL AND {db.PUBLIC} ORDER BY posted_at DESC").fetchall()
+            f"SELECT * FROM cats WHERE photo IS NULL AND released=0 AND {db.PUBLIC} ORDER BY source='shelter', posted_at DESC").fetchall()
     return jsonify({"items": [row_to_dict(r) for r in rows]})
 
 
@@ -348,18 +253,18 @@ def photos_missing():
 @local_only
 def photos_count():
     with db.connect() as conn:
-        n = conn.execute(f"SELECT COUNT(*) FROM cats WHERE source!='shelter' AND photo IS NULL AND {db.PUBLIC}").fetchone()[0]
+        n = conn.execute(f"SELECT COUNT(*) FROM cats WHERE photo IS NULL AND released=0 AND {db.PUBLIC}").fetchone()[0]
     return jsonify({"missing": n})
 
 
 @app.post("/api/cats/<int:cat_id>/photo")
 def set_photo(cat_id):
-    """Attach or replace a photo: the admin (any listing but a shelter's) or the poster (own listing)."""
+    """Attach or replace a photo (admin only)."""
     with db.connect() as conn:
         actor, row = _actor_for(conn, cat_id)
-    if row is None or row["source"] == "shelter":
+    if row is None:
         return jsonify({"error": "not_found"}), 404
-    if actor is None or (actor == "owner" and row["source"] != "user"):
+    if actor is None:
         return jsonify({"error": "forbidden"}), 403
     upload = request.files.get("photo")
     url = (request.form.get("url") or "").strip()
@@ -378,36 +283,18 @@ def set_photo(cat_id):
 
 @app.put("/api/cats/<int:cat_id>")
 def update_cat(cat_id):
-    """Change a listing: the admin may change any field; the poster only their own listing and only the fields
-    they filled in. Everything is recorded in the edit history."""
+    """Change a listing (admin only). Everything is recorded in the edit history."""
     body = request.get_json(silent=True) or {}
     with db.connect() as conn:
         actor, row = _actor_for(conn, cat_id)
         if row is None:
             return jsonify({"error": "not_found"}), 404
-        if row["source"] == "shelter":  # the shelter open data is re-synced and would overwrite any edit
-            return jsonify({"error": "shelter_data"}), 403
-        if actor is None or (actor == "owner" and row["source"] != "user"):
+        if actor is None:
             return jsonify({"error": "forbidden"}), 403
         try:
-            cols = edits.normalize(body, edits.OWNER_FIELDS if actor == "owner" else edits.ADMIN_FIELDS, row["posted_at"])
+            cols = edits.normalize(body, edits.ADMIN_FIELDS, row["posted_at"], row)
         except edits.EditError as e:
             return jsonify({"error": "validation", "fields": {e.field: e.code}}), 400
-        merged = {**dict(row), **cols}
-        errors = {}
-        if row["source"] == "user":  # what the upload form asks for stays required
-            if len(merged["description"] or "") < 10:
-                errors["description"] = "too_short"
-            if not merged["contact_name"]:
-                errors["contact_name"] = "required"
-            if not (merged["contact_phone"] or merged["contact_line"] or merged["contact_other"]):
-                errors["contact"] = "required"
-            if not merged["region"]:
-                errors["region"] = "required"
-            if "title" not in body and ("name" in cols or "description" in cols):
-                cols["title"] = (merged["name"] or (merged["description"] or "").split("\n")[0])[:80]
-        if errors:
-            return jsonify({"error": "validation", "fields": errors}), 400
         edit_id = edits.apply_edit(conn, cat_id, cols, actor)
         fresh = conn.execute("SELECT * FROM cats WHERE id=?", (cat_id,)).fetchone()
     return jsonify({"ok": True, "edit_id": edit_id, "cat": row_to_dict(fresh)})
@@ -420,29 +307,10 @@ def unlist_cat(cat_id):
         actor, row = _actor_for(conn, cat_id)
         if row is None:
             return jsonify({"error": "not_found"}), 404
-        if row["source"] == "shelter" or actor is None or (actor == "owner" and row["source"] != "user"):
+        if actor is None:
             return jsonify({"error": "forbidden"}), 403
         edits.apply_edit(conn, cat_id, {"status": "closed"}, actor, "unlisted")
     return jsonify({"ok": True})
-
-
-@app.post("/api/mine")
-def my_listings():
-    """The poster's own listings, found from the secrets their browser kept. Anything that does not match is skipped."""
-    items = (request.get_json(silent=True) or {}).get("items") or []
-    out = []
-    with db.connect() as conn:
-        for it in items[:50]:
-            try:
-                row = conn.execute("SELECT * FROM cats WHERE id=?", (int(it.get("id")),)).fetchone()
-            except (TypeError, ValueError):
-                continue
-            if row is not None and edits.token_ok(row, str(it.get("token") or "")):
-                d = row_to_dict(row)
-                d["pending"] = row["review"] == "pending"
-                d["closed"] = row["status"] == "closed"
-                out.append(d)
-    return jsonify({"items": out})
 
 
 @app.get("/api/admin/edits")
@@ -533,11 +401,33 @@ def ingest_preflight():
     return ("", 204)
 
 
+@app.get("/api/admin/fb-fetch")
+@local_only
+def fb_fetch_status():
+    return jsonify(fb_fetch.status())
+
+
+@app.post("/api/admin/fb-fetch")
+@local_only
+def fb_fetch_start():
+    """The admin starts the next batch of Facebook posts (see fb_fetch.py); it runs in the background."""
+    try:
+        n = int((request.get_json(silent=True) or {}).get("posts") or fb_fetch.BATCH)
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid_count"}), 400
+    ok, why = fb_fetch.start(max(1, min(n, 1000)))
+    if not ok:
+        return jsonify({"error": why}), 409
+    return jsonify(fb_fetch.status()), 202
+
+
 def _sync_loop():
     while True:
         time.sleep(6 * 3600)
         try:
             shelter.sync()
+            shelter.check_status(limit=600)  # drop animals that have left the shelter (已出所)
+            shelter.fill_photos(limit=300)  # photos that only the shelter's own page has
             with db.connect() as conn:
                 ages.refresh(conn)  # a cat posted as "3 months old" keeps growing
         except Exception as e:  # keep the loop alive; stale data is better than none

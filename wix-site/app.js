@@ -153,6 +153,17 @@ function cityOf(s) {
   return "";
 }
 const BREED_MAP = [["ragdoll",/布偶/],["british_shorthair",/英國短毛|英短/],["american_shorthair",/美國短毛|美短/],["scottish_fold",/蘇格蘭|摺耳/],["persian",/波斯/],["siamese",/暹羅/],["maine_coon",/緬因/],["bengal",/孟加拉/],["russian_blue",/俄羅斯藍/],["munchkin",/曼赤肯/],["exotic_shorthair",/異國短毛/],["norwegian_forest",/挪威/],["mixed",/混種/]];
+// the pet.gov.tw page of this one animal (not the search page); codes come from the site's own shelter list
+const SHELTER_CODES = {"新北市政府動物保護防疫處":"AAAAG","新北市新店區公立動物之家":"AAACG","新北市板橋區公立動物之家":"AAADG","新北市中和區公立動物之家":"AAAEG","新北市淡水區公立動物之家":"AAAFG","新北市瑞芳區公立動物之家":"AAAGG","新北市五股區公立動物之家":"AAAHG","新北市八里區公立動物之家":"AAAIG","新北市三芝區公立動物之家":"AAAJG","宜蘭縣流浪動物中途之家":"BAAAG","桃園市動物保護教育園區":"CAAAG","新竹縣動物保護教育園區":"DAAAG","苗栗縣動物保護教育園區":"EAAAG","臺中市動物之家南屯園區":"FAAAG","臺中市動物之家后里園區":"FAABG","彰化縣流浪狗中途之家臨時收容所":"GAAAG","南投縣公立動物收容所":"HAAAG","雲林縣流浪動物收容所":"IAAAG","嘉義縣動物保護教育園區":"JAAAG","高雄市壽山動物保護教育園區":"LAAAG","高雄市燕巢動物保護關愛園區":"LAABG","屏東縣公立犬貓中途之家":"MAAAG","屏東縣動物之家":"MAABG","臺東縣動物收容中心":"NAAAG","花蓮縣狗貓躍動園區":"OAAAG","澎湖縣流浪動物收容中心":"PAAAG","基隆市寵物銀行":"QAAAG","新竹市動物保護教育園區":"RAAAG","嘉義市動物保護教育園區":"TAAAG","臺南市動物之家灣裡站":"UAAAG","臺南市動物之家善化站":"UAABG","臺北市動物之家":"VAAAG","連江縣動物之家":"XAAAG","金門縣動物收容中心":"YAAAG"};
+const KNOWN_CODES = new Set(Object.values(SHELTER_CODES));
+function shelterLink(r) {
+  const id = String(r.animal_subid || "").trim();
+  const code = KNOWN_CODES.has(id.slice(0, 5)) ? id.slice(0, 5) : SHELTER_CODES[String(r.animal_place || "").trim()];
+  if (!id || !code) return "https://www.pet.gov.tw/AnimalApp/AnnounceMent.aspx?PageType=Transfer";
+  const b64 = (x) => btoa(String.fromCharCode(...new TextEncoder().encode(x)));
+  const page = String(r.animal_opendate || "") > new Date().toISOString().slice(0, 10) ? "Announce" : "Adopt";
+  return `https://www.pet.gov.tw/AnimalApp/AnnounceSingle.aspx?PageType=${page}&AcNum=${b64(id)}&UT=${b64(code)}`;
+}
 function fromShelter(r) {
   const v = String(r.animal_Variety || "").trim();
   const hit = BREED_MAP.find(([, re]) => re.test(v));
@@ -163,7 +174,7 @@ function fromShelter(r) {
     healthTags: [], region: cityOf(r.shelter_address) || cityOf(r.animal_place), locationText: String(r.animal_foundplace || "").trim(), contactName: String(r.shelter_name || r.animal_place || ""),
     contactPhone: String(r.shelter_tel || "").trim(), contactOther: String(r.shelter_address || "").trim(), description: String(r.animal_remark || "").trim(), photo: String(r.album_file || "").trim(),
     shelterNo: String(r.animal_subid || ""), availableFrom: open && open < "2999" ? open : "", postedAt: dateOf(String(r.animal_createtime || "").replace(/\//g, "-")),
-    sourceUrl: "https://www.pet.gov.tw/AnimalApp/AnnounceMent.aspx?PageType=Transfer" };
+    sourceUrl: shelterLink(r) };
 }
 function fromCms(item, collection) {
   const d = item.data || item;
