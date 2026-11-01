@@ -87,7 +87,7 @@ textarea { min-height: 110px; resize: vertical; }
 /* ---------- the sheet: banner, title row, source counts, cards ---------- */
 /* the banner runs to the sheet's edges like a cover, its top corners following the sheet's */
 .hero { position: relative; margin: -24px -24px 18px; border-radius: calc(var(--radius-sheet) - 1px) calc(var(--radius-sheet) - 1px) 0 0; overflow: hidden; background: var(--raised); }
-.hero img { display: block; width: 100%; height: clamp(260px, 30vw, 430px); object-fit: cover; object-position: 50% 12%; }   /* faces up top, ears in */
+.hero img { display: block; width: 100%; height: auto; aspect-ratio: 1920 / 800; object-fit: cover; }   /* the whole 1920×800 banner, scaled to the sheet */
 /* the title sits on a frosted strip over the paws and the rug; the frost fades in so the photo has no hard line */
 .hero-text { position: absolute; inset: auto 0 0; padding: 64px 28px 40px; color: var(--ink); isolation: isolate; }
 .hero-text::before { content: ""; position: absolute; inset: 0; z-index: -1;
@@ -119,7 +119,12 @@ textarea { min-height: 110px; resize: vertical; }
 .card:hover { border-color: var(--control); transform: translateY(-2px); }
 .card:active { transform: translateY(0); }
 .photo { aspect-ratio: 4 / 3; background: var(--raised); display: grid; place-items: center; position: relative; overflow: hidden; color: var(--muted); font-size: .85rem; }
-.photo img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .4s ease; }
+.photo img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: transform .4s ease, opacity .35s ease; }
+.photo img.in { opacity: 1; }   /* each photo fades in when it has arrived, over a soft shimmer while it is on its way */
+.photo:has(img:not(.in))::before { content: ""; position: absolute; inset: 0;
+  background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--surface) 70%, transparent) 50%, transparent 70%) var(--raised);
+  background-size: 220% 100%; animation: shimmer 1.4s linear infinite; }
+@keyframes shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 .card:hover .photo img { transform: scale(1.04); }
 .card-body { padding: 12px 16px 16px; display: grid; gap: 4px; }
 .card h3 { margin: 0; font-size: 1.12rem; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -185,6 +190,19 @@ dialog::backdrop { background: rgba(40, 26, 16, .5); }
 .foot { color: var(--muted); font-size: .85rem; padding: 8px var(--edge) 40px calc(var(--edge) + var(--side) + 24px); max-width: var(--page); margin-inline: auto; display: grid; gap: 6px; }
 .foot .foot-name { font-family: var(--round); font-size: 1.5rem; color: var(--ink); line-height: 1.2; }
 
+/* loading screen: a paw on the milk-tea frame until the first screen of cats and photos is ready, then it fades */
+.loader { position: fixed; inset: 0; z-index: 100; display: grid; place-content: center; justify-items: center; gap: 14px;
+  background: var(--frame); color: var(--accent); transition: opacity .45s ease, visibility .45s; }
+.loader.done { opacity: 0; visibility: hidden; }
+.loader-paw { width: 64px; height: 64px; animation: paw-bob 1.1s ease-in-out infinite; }
+.loader-dots { display: flex; gap: 8px; }
+.loader-dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--control); animation: dot 1.2s ease-in-out infinite; }
+.loader-dots i:nth-child(2) { animation-delay: .15s; }
+.loader-dots i:nth-child(3) { animation-delay: .3s; }
+.loader p { margin: 0; font-family: var(--round); font-size: 1.15rem; color: var(--ink); }
+@keyframes paw-bob { 0%, 100% { transform: translateY(0) rotate(-8deg); } 50% { transform: translateY(-10px) rotate(8deg); } }
+@keyframes dot { 0%, 100% { background: var(--control); transform: scale(.8); } 50% { background: var(--accent); transform: scale(1.15); } }
+
 /* back to top: appears once the visitor has scrolled a screen or more down the list */
 .totop { display: grid; place-items: center; position: fixed; right: 28px; bottom: calc(28px + env(safe-area-inset-bottom)); z-index: 20;
   width: 52px; height: 52px; border-radius: 50%; border: 1px solid var(--primary); background: var(--primary); color: var(--on-primary);
@@ -203,8 +221,8 @@ dialog::backdrop { background: rgba(40, 26, 16, .5); }
   .sheet { border-radius: var(--radius-sheet) var(--radius-sheet) 0 0; border-inline: 0; border-bottom: 0; padding: 20px 16px; min-height: auto; }
   .filters-toggle { display: inline-flex; min-height: 36px; padding-block: 4px; }
   .hero { margin: -20px -16px 16px; }
-  .hero img { height: auto; aspect-ratio: 3 / 2; object-position: 50% 0; }
-  .hero-text { padding: 40px 16px 30px; }
+  .hero img { aspect-ratio: 16 / 9; object-position: 36% 50%; }   /* taller than the banner on a phone so the title fits below the faces; the crop leans left so both faces stay whole */
+  .hero-text { padding: 32px 16px 28px; }
   .hero-text h1 { font-size: 1.45rem; }
   .hero-text p { font-size: .85rem; }
   .hero::after { height: 16px; background-size: 32px 16px; background-image: radial-gradient(circle at 50% 100%, var(--sheet) 18.5px, transparent 19.5px); }

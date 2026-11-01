@@ -20,7 +20,7 @@ from app import REGIONS, row_to_dict
 
 BASE = Path(__file__).resolve().parent
 OUT = BASE / "public_site"
-PAGES = ["style.css", "i18n.js", "app.js", "static-api.js", "hero-1600.webp", "hero-800.webp"]
+PAGES = ["style.css", "i18n.js", "app.js", "static-api.js", "hero-1920.webp", "hero-800.webp"]
 HIDDEN = ("photo_hash", "review", "dup_of", "extracted_by", "shelter_state", "status")
 
 REPORT_FORM = """<!-- Netlify Forms reads this at deploy time; static-api.js posts the visitor's report to it. -->

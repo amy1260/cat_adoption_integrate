@@ -65,7 +65,7 @@ function healthTags(c) {
 // ---------- shared card pieces ----------
 const photoHtml = (c) =>
   c.photo
-    ? `<img src="${esc(c.photo)}" alt="${esc(titleOf(c))}" loading="lazy" referrerpolicy="no-referrer" data-none="${esc(t("no_photo"))}" onerror="this.replaceWith(this.dataset.none)">`
+    ? `<img src="${esc(c.photo)}" alt="${esc(titleOf(c))}" loading="lazy" referrerpolicy="no-referrer" data-none="${esc(t("no_photo"))}" onload="this.classList.add('in')" onerror="this.replaceWith(this.dataset.none)">`
     : `<span>${esc(t("no_photo"))}</span>`;
 
 // post titles often carry emoji; the site shows the words
@@ -244,8 +244,8 @@ async function renderBrowse() {
           <label class="check"><input type="checkbox" id="fiv"${state.f.fiv ? " checked" : ""}> ${esc(t("fiv_neg"))}</label></div>
       </aside>
       <section class="sheet" aria-live="polite">
-        <div class="hero"><img src="/static/hero-1600.webp" srcset="/static/hero-800.webp 800w, /static/hero-1600.webp 1600w"
-          sizes="(max-width: 860px) 100vw, 75vw" width="1600" height="880" alt="${esc(t("hero_alt"))}" fetchpriority="high">
+        <div class="hero"><img src="/static/hero-1920.webp" srcset="/static/hero-800.webp 800w, /static/hero-1920.webp 1920w"
+          sizes="(max-width: 860px) 100vw, 75vw" width="1920" height="800" alt="${esc(t("hero_alt"))}" fetchpriority="high">
           <div class="hero-text"><h1>${esc(t("screen_title"))}</h1>
             <p>${esc(t("screen_sub"))}${m.updated ? ` · <span class="nowrap">${esc(t("updated", { d: m.updated }))}</span>` : ""}</p></div></div>
         <div class="titlerow">
@@ -262,7 +262,7 @@ async function renderBrowse() {
       </section>
     </div>`;
   wireFilters();
-  loadCats();
+  return loadCats();
 }
 
 function wireFilters() {
@@ -399,7 +399,16 @@ async function route() {
   else if (r === "/review" && state.isAdmin) renderReview();
   else if (r === "/reports" && state.isAdmin) renderReports();
   else if (r === "/photos" && state.isAdmin) renderPhotos();
-  else renderBrowse();
+  else await renderBrowse();
+}
+
+// The loading screen stays until the cats are listed and the photos on the first screen have arrived (or failed),
+// so the page shows up whole instead of filling in; never longer than 6 seconds.
+async function hideLoader() {
+  const shown = [...document.querySelectorAll(".hero img, .grid img")].filter((img) => img.getBoundingClientRect().top < innerHeight);
+  const arrived = shown.map((img) => (img.complete ? null : new Promise((ok) => { img.addEventListener("load", ok); img.addEventListener("error", ok); })));
+  await Promise.race([Promise.all(arrived), new Promise((ok) => setTimeout(ok, 6000))]);
+  $("#loader").classList.add("done");
 }
 
 // ---------- visitor reports (local admin only) ----------
@@ -628,4 +637,5 @@ const toTop = () => $("#toTop").classList.toggle("show", window.scrollY > window
 window.addEventListener("scroll", toTop, { passive: true });
 $("#toTop").onclick = () => window.scrollTo({ top: 0, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
 window.addEventListener("hashchange", route);
-refreshAdmin().then(route);
+$("#loaderText").textContent = t("loading");
+refreshAdmin().then(route).finally(hideLoader);
