@@ -56,13 +56,32 @@ python apify_latest.py --status                    # 最近幾次的執行、花
 
 ## 公開網站（Netlify，唯讀）
 ```
-python publish.py      # 產生 public_site/：只有訪客看得到的頁面、上架中的貓（data/cats.json）與照片
+python publish.py            # 產生 public_site/：只有訪客看得到的頁面、上架中的貓（data/cats.json）與照片
+python publish.py --deploy   # 產生後直接上傳到 Netlify
+python netlify_reports.py    # 把公開網站的回報帶進管理介面
 ```
 - 公開網站是純靜態檔案，**沒有伺服器、也沒有管理者 API**，所以審核、回報、缺照片、修改紀錄、編輯這些管理介面不會出現，也無法從網站修改任何資料；管理一律在這台電腦上用 `python app.py`（http://127.0.0.1:8765）。
 - 待審核、已下架、已合併的貓，以及只有管理者會用到的欄位，都不會放進去。
-- 訪客按「回報問題」會送到 Netlify Forms（Netlify > 專案 tw-cat-adoption-hub > Forms 查看）。
-- 部署：Netlify 專案 `tw-cat-adoption-hub`（https://tw-cat-adoption-hub.netlify.app）。到 https://app.netlify.com/projects/tw-cat-adoption-hub/deploys ，把 `public_site` 資料夾整個拖進頁面上的拖放區即可上線。
-- 資料有變（收容所同步、`python apify_latest.py`、管理者修改）之後，重跑 `python publish.py` 再拖放一次，網站才會更新。
+- Netlify 專案：`tw-cat-adoption-hub`（https://tw-cat-adoption-hub.netlify.app）。
+
+### 自動更新與回報（需要 Netlify 權杖）
+先建立權杖：Netlify > 右上頭像 > User settings > Applications > Personal access tokens > New access token。再設成環境變數（只放在環境變數，不寫進檔案）：
+```
+setx NETLIFY_AUTH_TOKEN "<你的權杖>"
+```
+設定後要**開新的終端機**再執行 `python app.py`。
+
+- **自動部署**：`python app.py` 開著時，管理介面裡會影響公開網站的修改，30 秒後會自動重新產生並上傳到 Netlify，不用再手動拖放。連續修改只會合併成一次上傳。會觸發的修改：
+  - 待確認重複的決定與復原
+  - 貓咪資料的修改、照片
+  - 上架、下架
+  - 修改紀錄的復原
+  - 回報的「下架並結案」
+  - 每 6 小時一次的收容所同步
+- **部署狀態**：管理介面頁尾會顯示公開網站的狀態（幾秒後更新、更新中、已更新的時間、失敗原因），也可以按「立即更新」。
+- **`apify_latest.py`**：在命令列執行，不會自動部署。抓完後執行 `python publish.py --deploy`，或在管理介面按「立即更新」。
+- **回報**：訪客在公開網站按「回報問題」會送到 Netlify Forms。打開管理介面的「使用者回報」時，會自動把新的帶進來，標示為「公開網站」，也可以按「與 Netlify 同步」。在 Netlify 刪除（或標成垃圾）的回報，同步時這裡也會刪除。也能在 Netlify > 專案 > Forms 查看。
+- **沒有權杖時**：要手動執行 `python publish.py`，再把 `public_site` 拖到 https://app.netlify.com/projects/tw-cat-adoption-hub/deploys 。
 
 ## 防止重複
 - 同一來源內重複（相同網址、相同內容、相同照片、同聯絡人且資料相同）：匯入時直接略過。

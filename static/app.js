@@ -395,11 +395,35 @@ function renderNav() {
     b.className = "linkbtn"; b.style.marginInlineStart = "12px"; b.textContent = t(state.visitorPreview ? "preview_off" : "preview_on");
     b.onclick = () => { state.visitorPreview = !state.visitorPreview; sessionStorage.setItem("preview", state.visitorPreview ? "1" : "0"); location.hash = "#/"; refreshAdmin().then(route); };
     $("#foot").appendChild(b);
+    const pub = document.createElement("div");
+    pub.id = "pubState"; pub.className = "pub-state";
+    $("#foot").appendChild(pub);
+    showPublish();
   }
   $("#toTop").title = t("to_top");
   $("#toTop").setAttribute("aria-label", t("to_top"));
   document.documentElement.lang = isEn() ? "en" : "zh-Hant";
   document.querySelectorAll(".lang button").forEach((b) => b.classList.toggle("on", b.dataset.lang === state.lang));
+}
+
+// admin only: whether the public site (Netlify) is up to date; it is republished by itself after a change
+let pubTimer;
+async function showPublish() {
+  clearTimeout(pubTimer);
+  const r = await api("/api/publish");
+  const box = $("#pubState");
+  if (!r.ok || !box) return;
+  const s = r.body;
+  const text = !s.token ? t("pub_no_token")
+    : s.state === "waiting" ? t("pub_waiting", { n: s.in })
+      : s.state === "deploying" ? t("pub_deploying")
+        : s.state === "done" ? t("pub_done", { t: s.at.slice(11, 16) })
+          : s.state === "failed" ? t("pub_failed", { e: s.error }) : t("pub_idle");
+  box.innerHTML = `<span class="${s.state === "failed" || !s.token ? "warn" : ""}">${esc(text)}</span>`
+    + (s.token && s.state !== "deploying" ? ` <button class="linkbtn" id="pubNow" type="button">${esc(t("pub_now"))}</button>` : "");
+  const now = $("#pubNow");
+  if (now) now.onclick = async () => { now.disabled = true; await api("/api/publish", { method: "POST" }); setTimeout(showPublish, 800); };
+  pubTimer = setTimeout(showPublish, s.state === "waiting" || s.state === "deploying" ? 3000 : 20000);
 }
 
 async function route() {
@@ -431,12 +455,24 @@ async function hideLoader() {
 }
 
 // ---------- visitor reports (local admin only) ----------
-async function renderReports() {
+// reports sent from the public site live in Netlify Forms; opening this page (or 更新) brings the new ones in first
+async function pullReports() {
+  const r = await api("/api/reports/pull", { method: "POST" });
+  const b = r.body || {};
+  if (!r.ok || b.error) return { cls: "warn", text: t(b.error === "no_token" ? "rp_pull_no_token" : b.error === "token_rejected" ? "rp_pull_bad_token" : "rp_pull_failed") };
+  const said = [b.new ? t("rp_pull_new", { n: b.new }) : "", b.removed ? t("rp_pull_removed", { n: b.removed }) : ""].filter(Boolean);
+  return { cls: "good", text: said.length ? said.join(" ") : t("rp_pull_none") };
+}
+
+async function renderReports(pulled) {
+  pulled ??= await pullReports();
+  await refreshAdmin();
   const [open, done] = await Promise.all([api("/api/reports?status=open"), api("/api/reports?status=done")]);
   if (!open.ok) { $("#app").innerHTML = `<section class="panel"><p>403</p></section>`; return; }
   const item = (r, handled) => `
     <div class="review-item" data-report="${r.id}">
       <div class="meta"><strong>${esc(t("rp_kind_" + r.kind))}</strong> · ${esc(r.created_at.replace("T", " "))}
+        · <span class="tag">${esc(t(r.netlify_id ? "rp_via_site" : "rp_via_local"))}</span>
         ${handled ? ` · ${esc(t(r.status === "dismissed" ? "rp_dismissed" : "rp_resolved"))}` : ""}
         ${r.contact ? ` · ${esc(t("rp_from"))}: ${esc(r.contact)}` : ""}</div>
       ${r.message ? `<div class="desc">${esc(r.message)}</div>` : ""}
@@ -453,17 +489,19 @@ async function renderReports() {
   <section class="panel">
     <h1>${esc(t("rp_title"))}</h1>
     <p class="meta">${esc(t("rp_intro_admin"))}</p>
+    <div class="notice ${pulled.cls}" style="display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+      <span>${esc(pulled.text)}</span><button class="btn ghost" data-pull type="button">${esc(t("rp_pull"))}</button></div>
     ${open.body.items.length ? open.body.items.map((r) => item(r, false)).join("") : `<p class="empty">${esc(t("rp_empty"))}</p>`}
     ${done.body.items.length ? `<h2>${esc(t("rp_history"))}</h2>` + done.body.items.map((r) => item(r, true)).join("") : ""}
   </section>`;
   $("#app").onclick = async (e) => {
+    if (e.target.closest("[data-pull]")) { e.target.closest("[data-pull]").disabled = true; renderReports(); return; }
     const b = e.target.closest("[data-act]");
     if (!b) return;
     await api("/api/reports/" + b.closest("[data-report]").dataset.report, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: b.dataset.act }),
     });
-    await refreshAdmin();
-    renderReports();
+    renderReports(pulled);
   };
 }
 

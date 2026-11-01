@@ -189,6 +189,8 @@ dialog::backdrop { background: rgba(40, 26, 16, .5); }
 
 /* ---------- the close: the name returns ---------- */
 .foot { color: var(--muted); font-size: .85rem; padding: 8px var(--edge) 40px calc(var(--edge) + var(--side) + 24px); max-width: var(--page); margin-inline: auto; display: grid; gap: 6px; }
+.pub-state { font-size: .82rem; }
+.pub-state .warn { color: var(--warn); }
 .foot .foot-name { font-family: var(--round); font-size: 1.5rem; color: var(--ink); line-height: 1.2; }
 
 /* loading screen: a paw on the milk-tea frame until the first screen of cats and photos is ready, then it fades */

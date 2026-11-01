@@ -8,14 +8,25 @@ history, editing) cannot appear there and nothing can be changed from it; all of
 (python app.py, http://127.0.0.1:8765). Cats waiting for review, taken down or merged are left out, and so are
 admin-only fields. Visitors' problem reports are sent to Netlify Forms (Netlify > the site > Forms).
 
-Run it again after the data changes (shelter sync, python apify_latest.py, an edit) and deploy the folder again.
+    python publish.py --deploy      build, then upload it to Netlify (needs NETLIFY_AUTH_TOKEN, see netlify_reports.py)
+
+While python app.py runs, this happens by itself: an admin change that shows on the public site (a duplicate
+decided, a cat edited, listed or taken down, a photo, the shelter sync) is published to Netlify 30 seconds later.
+Otherwise run it after the data changes (python apify_latest.py, say) and upload the folder.
 """
+import io
 import json
 import shutil
+import sys
+import time
+import zipfile
 from datetime import date
 from pathlib import Path
 
+import requests
+
 import db
+import netlify_reports
 from app import REGIONS, row_to_dict
 
 BASE = Path(__file__).resolve().parent
@@ -95,6 +106,53 @@ def build():
     return {"cats": len(cats), "photos": photos, "by_source": meta["by_source"], "folder": str(OUT)}
 
 
+class DeployError(Exception):
+    pass
+
+
+def _zipped(folder):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(folder.rglob("*")):
+            if f.is_file():
+                z.write(f, f.relative_to(folder).as_posix())
+    return buf.getvalue()
+
+
+def deploy(tok=None, wait=180):
+    """Build public_site/ and publish it as the live Netlify site. Waits for Netlify to finish, up to `wait` seconds."""
+    tok = tok or netlify_reports.token()
+    if not tok:
+        raise DeployError("no_token")
+    info = build()
+    auth = {"Authorization": f"Bearer {tok}"}
+    try:
+        r = requests.post(f"{netlify_reports.API}/sites/{netlify_reports.SITE_ID}/deploys", data=_zipped(OUT),
+                          headers={**auth, "Content-Type": "application/zip"}, timeout=300)
+        if r.status_code in (401, 403):
+            raise DeployError("token_rejected")
+        if not r.ok:
+            raise DeployError(f"http_{r.status_code}")
+        dep = r.json()
+        end = time.time() + wait
+        while dep.get("state") not in ("ready", "error") and time.time() < end:
+            time.sleep(3)
+            dep = requests.get(f"{netlify_reports.API}/deploys/{dep['id']}", headers=auth, timeout=30).json()
+    except requests.RequestException as e:
+        raise DeployError(f"network: {e.__class__.__name__}") from None
+    if dep.get("state") == "error":
+        raise DeployError("netlify: " + (dep.get("error_message") or "deploy failed"))
+    return {**info, "deploy_id": dep.get("id"), "state": dep.get("state"), "url": dep.get("ssl_url") or dep.get("url")}
+
+
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")
     db.init()
-    print(json.dumps(build(), ensure_ascii=False))
+    if "--deploy" in sys.argv:
+        try:
+            print(json.dumps(deploy(), ensure_ascii=False))
+        except DeployError as e:
+            print(json.dumps({"error": str(e)}, ensure_ascii=False))
+            sys.exit(1)
+    else:
+        print(json.dumps(build(), ensure_ascii=False))

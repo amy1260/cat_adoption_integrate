@@ -123,7 +123,8 @@ CREATE TABLE IF NOT EXISTS reports (
     reporter TEXT,                   -- hashed address, only for spotting abuse
     created_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'open',   -- open | resolved | dismissed
-    handled_at TEXT
+    handled_at TEXT,
+    netlify_id TEXT                  -- the Netlify Forms submission, for reports sent from the public site
 );
 CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
 """
@@ -152,6 +153,9 @@ def init():
         if "grp" not in {r["name"] for r in conn.execute("PRAGMA table_info(fb_posts_seen)")}:
             conn.execute("ALTER TABLE fb_posts_seen ADD COLUMN grp TEXT")
         conn.execute("UPDATE fb_posts_seen SET grp='catparadise' WHERE grp IS NULL")   # all posts before groups were told apart
+        if "netlify_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(reports)")}:
+            conn.execute("ALTER TABLE reports ADD COLUMN netlify_id TEXT")   # set on reports sent from the public site
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_netlify ON reports(netlify_id) WHERE netlify_id IS NOT NULL")
         dcols = {r["name"] for r in conn.execute("PRAGMA table_info(dup_candidates)")}
         for col, ddl in (("kept", "TEXT"), ("fill_edit", "INTEGER")):
             if col not in dcols:

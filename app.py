@@ -12,6 +12,7 @@ import ages
 import db
 import edits
 import ingest
+import netlify_reports
 import shelter
 from images import download, save_bytes
 
@@ -348,12 +349,22 @@ def reports_list():
     where = "r.status='open'" if status == "open" else "r.status!='open'"
     with db.connect() as conn:
         rows = conn.execute(
-            f"SELECT r.* FROM reports r WHERE {where} ORDER BY r.id DESC LIMIT 200").fetchall()
+            f"SELECT r.* FROM reports r WHERE {where} ORDER BY r.created_at DESC, r.id DESC LIMIT 200").fetchall()
         out = []
         for r in rows:
             cat = conn.execute("SELECT * FROM cats WHERE id=?", (r["cat_id"],)).fetchone()
             out.append({**dict(r), "reporter": None, "cat": row_to_dict(cat) if cat else None})
     return jsonify({"items": out})
+
+
+@app.post("/api/reports/pull")
+@local_only
+def reports_pull():
+    """Bring in the reports sent from the public site (Netlify Forms); the report page calls this when it opens."""
+    try:
+        return jsonify(netlify_reports.pull())
+    except netlify_reports.PullError as e:
+        return jsonify({"error": str(e)})
 
 
 @app.get("/api/reports/count")
@@ -381,6 +392,7 @@ def reports_handle(report_id):
         else:
             if action == "close_cat":
                 conn.execute("UPDATE cats SET status='closed' WHERE id=?", (rep["cat_id"],))
+                schedule_publish()
             status = "dismissed" if action == "dismiss" else "resolved"
             conn.execute("UPDATE reports SET status=?, handled_at=? WHERE id=?", (status, now, report_id))
     return jsonify({"ok": True})
@@ -417,8 +429,82 @@ def _sync_loop():
             shelter.fill_photos(limit=300)  # photos that only the shelter's own page has
             with db.connect() as conn:
                 ages.refresh(conn)  # a cat posted as "3 months old" keeps growing
+            schedule_publish()  # the public site follows the shelters too
         except Exception as e:  # keep the loop alive; stale data is better than none
             print("shelter sync failed:", e)
+
+
+# ---- publishing the public site (Netlify) by itself after a change that visitors would see ----
+PUBLISH_DELAY = 30   # seconds after the last change, so a run of edits goes out as one deploy
+# (method, route) of the admin changes that show on the public site
+PUBLISH_ON = {("POST", "/api/review/<int:cand_id>"), ("POST", "/api/cats/<int:cat_id>/photo"),
+              ("PUT", "/api/cats/<int:cat_id>"), ("DELETE", "/api/cats/<int:cat_id>"),
+              ("POST", "/api/admin/edits/<int:edit_id>/revert"), ("POST", "/api/ingest/fb")}
+_pub_lock = threading.Lock()
+_pub = {"timer": None, "running": False, "again": False, "status": {"state": "idle"}}
+
+
+def schedule_publish():
+    if not netlify_reports.token():
+        _pub["status"] = {"state": "no_token"}
+        return
+    with _pub_lock:
+        if _pub["timer"]:
+            _pub["timer"].cancel()
+        _pub["timer"] = threading.Timer(PUBLISH_DELAY, _publish_now)
+        _pub["timer"].daemon = True
+        _pub["timer"].start()
+        if not _pub["running"]:
+            _pub["status"] = {**_pub["status"], "state": "waiting", "due": time.time() + PUBLISH_DELAY}
+
+
+def _publish_now():
+    import publish   # imports this module, so only when needed
+    with _pub_lock:
+        _pub["timer"] = None
+        if _pub["running"]:   # a deploy is under way: go again when it ends
+            _pub["again"] = True
+            return
+        _pub["running"] = True
+    _pub["status"] = {**_pub["status"], "state": "deploying"}
+    try:
+        res = publish.deploy()
+        _pub["status"] = {"state": "done", "at": datetime.now().isoformat(timespec="seconds"), "cats": res["cats"]}
+    except Exception as e:   # publish.DeployError, or a build failure: keep the reason for the admin
+        _pub["status"] = {"state": "failed", "at": datetime.now().isoformat(timespec="seconds"), "error": str(e)}
+        print("publish failed:", e)
+    finally:
+        with _pub_lock:
+            _pub["running"] = False
+            again, _pub["again"] = _pub["again"], False
+        if again:
+            schedule_publish()
+
+
+@app.after_request
+def _publish_after_change(resp):
+    rule = request.url_rule.rule if request.url_rule else None
+    if resp.status_code < 400 and (request.method, rule) in PUBLISH_ON:
+        schedule_publish()
+    return resp
+
+
+@app.get("/api/publish")
+@local_only
+def publish_status():
+    s = dict(_pub["status"])
+    if s.get("state") == "waiting":
+        s["in"] = max(0, round(s.pop("due") - time.time()))
+    return jsonify({**s, "token": bool(netlify_reports.token())})
+
+
+@app.post("/api/publish")
+@local_only
+def publish_start():
+    if not netlify_reports.token():
+        return jsonify({"error": "no_token"}), 400
+    threading.Thread(target=_publish_now, daemon=True).start()
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":
