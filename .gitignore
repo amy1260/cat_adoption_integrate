@@ -12,3 +12,5 @@ static/photos/
 public_site/
 .netlify/
 .taste-skill/
+# Exported conversation with Claude, kept on this computer
+對話紀錄.md
