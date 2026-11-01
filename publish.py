@@ -45,10 +45,11 @@ NETLIFY_TOML = """# Plain files, nothing to build.
 [build]
   publish = "."
 
+# The cat list changes whenever the admin edits; browsers ask each time (cheap: unchanged files answer 304).
 [[headers]]
   for = "/data/*"
   [headers.values]
-    Cache-Control = "public, max-age=300"
+    Cache-Control = "public, max-age=0, must-revalidate"
 
 [[headers]]
   for = "/*"
