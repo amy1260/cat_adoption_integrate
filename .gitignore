@@ -9,3 +9,6 @@ __pycache__/
 .venv/
 fbvenv/
 static/photos/
+public_site/
+.netlify/
+.taste-skill/

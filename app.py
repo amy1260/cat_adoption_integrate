@@ -1,6 +1,5 @@
 import hashlib
 import json
-import os
 import threading
 import time
 from datetime import datetime, timedelta
@@ -12,7 +11,6 @@ from flask import Flask, jsonify, request, send_from_directory
 import ages
 import db
 import edits
-import fb_fetch
 import ingest
 import shelter
 from images import download, save_bytes
@@ -47,11 +45,12 @@ def index():
 def list_cats():
     a = request.args
     where, params = [db.PUBLIC], []
+    src_where, src_params = [], []   # kept apart so the per-source counts ignore only this filter
     for col in ("region", "sex", "age_group", "source", "breed"):
         vals = [v for v in a.getlist(col) if v]
         if vals:
-            where.append(f"{col} IN ({','.join('?' * len(vals))})")
-            params += vals
+            (src_where if col == "source" else where).append(f"{col} IN ({','.join('?' * len(vals))})")
+            (src_params if col == "source" else params).extend(vals)
     for col in ("neutered", "vaccinated"):
         if a.get(col) in ("0", "1"):
             where.append(f"{col}=?")
@@ -64,18 +63,26 @@ def list_cats():
         where.append("(title LIKE ? OR description LIKE ? OR color LIKE ? OR breed_text LIKE ? OR contact_name LIKE ? "
                      "OR shelter_no LIKE ? OR chip LIKE ? OR name LIKE ?)")
         params += [like] * 8
-    sql_where = " AND ".join(where)
-    order = {"region": "region, posted_at DESC", "age": "age_months IS NULL, age_months"}.get(
-        a.get("sort"), "COALESCE(posted_at, created_at) DESC")
+    base_where, base_params = " AND ".join(where), list(params)
+    sql_where = " AND ".join(where + src_where)
+    params = params + src_params
+    # shelter cats have only an age group: it stands in for the months (kitten, adult, senior) so they sort with the rest
+    age = "COALESCE(age_months, CASE age_group WHEN 'kitten' THEN 6 WHEN 'adult' THEN 48 WHEN 'senior' THEN 120 END)"
+    posted = "COALESCE(posted_at, created_at)"
+    order = {"age": f"{age} IS NULL, {age}, {posted} DESC",
+             "age_desc": f"{age} IS NULL, {age} DESC, {posted} DESC"}.get(a.get("sort"), f"{posted} DESC")
     page = max(1, int(a.get("page", 1)))
     per = min(60, max(1, int(a.get("per_page", 24))))
     with db.connect() as conn:
         total = conn.execute(f"SELECT COUNT(*) FROM cats WHERE {sql_where}", params).fetchone()[0]
+        by_source = {r[0]: r[1] for r in conn.execute(
+            f"SELECT source, COUNT(*) FROM cats WHERE {base_where} GROUP BY source", base_params)}
         rows = conn.execute(
             f"SELECT *, (SELECT COUNT(*) FROM cats c2 WHERE c2.dup_of=cats.id) AS also_listed "
             f"FROM cats WHERE {sql_where} ORDER BY {order} LIMIT ? OFFSET ?",
             params + [per, (page - 1) * per]).fetchall()
-    return jsonify({"total": total, "page": page, "per_page": per, "items": [row_to_dict(r) for r in rows]})
+    return jsonify({"total": total, "page": page, "per_page": per, "by_source": by_source,
+                    "items": [row_to_dict(r) for r in rows]})
 
 
 def _is_local():
@@ -399,26 +406,6 @@ def cors(resp):
 @app.route("/api/ingest/fb", methods=["OPTIONS"])
 def ingest_preflight():
     return ("", 204)
-
-
-@app.get("/api/admin/fb-fetch")
-@local_only
-def fb_fetch_status():
-    return jsonify(fb_fetch.status())
-
-
-@app.post("/api/admin/fb-fetch")
-@local_only
-def fb_fetch_start():
-    """The admin starts the next batch of Facebook posts (see fb_fetch.py); it runs in the background."""
-    try:
-        n = int((request.get_json(silent=True) or {}).get("posts") or fb_fetch.BATCH)
-    except (TypeError, ValueError):
-        return jsonify({"error": "invalid_count"}), 400
-    ok, why = fb_fetch.start(max(1, min(n, 1000)))
-    if not ok:
-        return jsonify({"error": why}), 409
-    return jsonify(fb_fetch.status()), 202
 
 
 def _sync_loop():

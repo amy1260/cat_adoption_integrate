@@ -1,6 +1,6 @@
 # 貓咪領養統整站 / Cat Adoption Hub
 
-整合兩種來源：全國動物收容管理系統（農業部開放資料）、臉書社團「貓咪天堂」公開貼文。網站不開放民眾刊登，也不保存任何會員資料。介面預設中文，可切換英文。
+整合兩種來源：全國動物收容管理系統（農業部開放資料）、臉書社團「愛貓領養」公開貼文（2026-11-01 前為「貓咪天堂」，舊資料已下架並備份）。網站不開放民眾刊登，也不保存任何會員資料。介面預設中文，可切換英文。
 
 ## 啟動
 雙擊 `start.bat`，或：
@@ -29,22 +29,21 @@ python ingest.py data/apify/catparadise_*.json
 ```
 Apify 回傳精確時間與貼文網址；轉分享的貼文會以原作者與原文網址匯入，同一篇被多人轉分享只會留一筆。
 
-### 從上次截止點往後抓（管理者頁面「臉書抓取」，`fb_fetch.py`）
-不會每天自動抓取，由管理者自己決定何時更新：在本機打開網站，點上方的「臉書抓取」，按「開始抓取」。
+### 抓最新 90 篇貼文並自動上架（`apify_latest.py`）
 ```
-setx APIFY_TOKEN "你的 Apify 個人 API token"     # 只需一次；伺服器也會直接讀這個設定，token 不寫進檔案
-python fb_fetch.py            # 也可以在命令列抓一批（預設 30 篇；python fb_fetch.py 50 抓 50 篇）
-python fb_fetch.py --status   # 下一批的起點與最近的抓取紀錄
+setx APIFY_TOKEN "你的 Apify 個人 API token"     # 只需一次，之後開新的終端機才會生效
+setx GEMINI_API_KEY "你的 Google 金鑰"             # 語言模型分析用，https://aistudio.google.com/apikey
+python apify_latest.py --plan                      # 只看這次會抓什麼、最多花多少，不會啟動抓取
+python apify_latest.py                             # 抓「愛貓領養」社團最新 90 篇沒抓過的貼文，並上架
+python apify_latest.py --posts 20                  # 改抓其他篇數
+python apify_latest.py --status                    # 最近幾次的執行、花費、網站上的臉書貓咪
 ```
-1. **依發文時間由舊到新**：第一批從 2026-10-01 00:00（台灣時間）開始，抓指定篇數（預設 30）；這一批最後一篇的發文時間就是下一批的起點。例如第 30 篇是 10/1 14:32 發的，下一次就從 10/1 14:32 接著抓。起點存在資料庫 `kv` 表的 `fb_checkpoint`。
-2. **用有時間區間的抓取器**：Facebook 社團只能從最新往回翻，Apify 官方的 Groups Scraper 不能設定截止時間，所以改用 `memo23/facebook-public-group-posts-scraper`（可設「早於／晚於」，往回翻時略過的貼文不收費；每篇約 0.0015 美元，每次啟動約 0.008 美元）。往回翻約每分鐘 85 篇，離現在越遠越慢：抓 10 月初的貼文一批要一個多小時，接近現在只要幾分鐘。
-3. **不漏抓也不重複**：一次抓回的時間區間如果被截斷（篇數上限或逾時），只算到截斷處，剩下的再抓一次；抓過的貼文網址記在 `fb_posts_seen`，下一批不會再匯入。每次 Apify 執行的區間、篇數、花費記在 `apify_runs`。
-4. **失敗不前進**：Apify 出錯時起點不會移動，下次按鈕會重抓同一段。
-
-**全自動流程：** 按下抓取後不需要人工介入，同一批內依序完成：①規則先篩掉明顯不是送養的貼文 → ②下載貼文第一張照片 → ③語言模型讀貼文（是不是真的送養文、性別、年齡、品種、花色、結紮疫苗、地區、聯絡方式） → ④與已上架的貓比對，不重複 → ⑤直接上架。**預設用 Google Gemini**：到 https://aistudio.google.com/apikey 申請金鑰，`setx GEMINI_API_KEY "..."`（也認 `GOOGLE_API_KEY`）；沒設任何金鑰就只用規則解析，一樣會上架。
-- `CATADOPT_LLM=0` 關閉語言模型；`CATADOPT_LLM_MODEL` 換模型（Google 預設 `gemini-3.5-flash-lite`，約 2 秒一篇；`gemini-3.8-flash` 更聰明，但實測一篇要一分多鐘，不適合批次）；`CATADOPT_LLM_RUN_POSTS` 是單次執行最多讀幾篇（預設 300，免費額度有速率與次數限制）；超過的貼文沿用規則解析，之後可用 `python llm_extract.py --backfill` 補讀。
+不會自動排程，只有手動執行時才抓（token 只讀環境變數、不寫進檔案）。抓取的社團是「愛貓領養」 https://www.facebook.com/groups/1612153615732604 （網站來源標示 `fb_aimao`）；2026-11-01 以前抓的是「貓咪天堂」，那批貓已下架，資料、照片與原始貼文備份在 `data/backups/facebook_catparadise_*/`，在修改紀錄裡也能逐筆還原。
+- **不重複抓：** 每次抓到的貼文都記在資料庫 `fb_posts_seen`（依社團分開記）；下一次只請 Apify 抓「比這個社團已抓過最新那篇更新」的貼文，萬一還是有抓過的貼文回來，也會在匯入前剔除。距離上次新貼文超過 90 篇時，只取最新的 90 篇。
+- **全自動流程：** 抓到的新貼文同一次執行內依序完成：①規則先篩掉明顯不是送養的貼文 → ②下載貼文第一張照片 → ③語言模型讀貼文（是不是真的送養文、性別、年齡、品種、花色、結紮疫苗、地區、聯絡方式） → ④與已上架的貓比對，不重複 → ⑤直接上架。**預設用 Google Gemini**（也認 `GOOGLE_API_KEY`）；沒設任何金鑰就只用規則解析，一樣會上架。
+- **花費：** Facebook Groups Scraper（`apify/facebook-groups-scraper`）每篇約 0.005 美元，第二次起加日期篩選 0.002，每次啟動 0.001，第一次 90 篇最多約 0.46 美元，之後每次最多約 0.63 美元。每次執行都用 Apify 的 `maxTotalChargeUsd` 設上限；本月 Apify 額度不夠時不會啟動（額度讀自帳號的每月上限，可用 `APIFY_MONTHLY_BUDGET_USD` 自訂）。每次執行的結果記在 `apify_runs`。
+- `CATADOPT_LLM=0` 關閉語言模型；`CATADOPT_LLM_MODEL` 換模型（Google 預設 `gemini-3.5-flash-lite`，約 2 秒一篇；`gemini-3.8-flash` 更聰明，但實測一篇要一分多鐘，不適合批次）；`CATADOPT_LLM_RUN_POSTS` 是單次執行最多讀幾篇（預設 300）；超過的貼文沿用規則解析，之後可用 `python llm_extract.py --backfill` 補讀。
 - 模型失敗、被擋或金鑰有問題時，貼文沿用規則解析，不會漏掉；同一篇貼文的答案有快取，不會重複付費。遇到速率限制（429）會自動等待重試。想改用 Claude：設 `ANTHROPIC_API_KEY` 並讓 `CATADOPT_LLM_PROVIDER=anthropic`（或 `CATADOPT_LLM_MODEL=claude-...`）；兩種金鑰都有時預設用 Google。
-- 伺服器要能讀到 `APIFY_TOKEN` 與 `GEMINI_API_KEY`（用 setx 設定過即可，不必重開終端機）。
 
 **貓咪照片：** Apify 的資料已包含貼文的圖片網址（自己的貼文在 `attachments`，轉分享在 `sharedPost.attachments` 或 `sharedPost.media`）。`apify_fetch.py` 會挑出第一張，`ingest.py` 匯入時下載到 `static/photos/`（不直接引用 Facebook 網址，因為連結幾天後就會失效）。已匯入但沒有照片的貓咪，重新匯入同一批資料時會自動補上照片與原文網址。請在下載後儘快匯入。
 
@@ -53,27 +52,28 @@ python fb_fetch.py --status   # 下一批的起點與最近的抓取紀錄
 - **用語言模型讀貼文：** `llm_extract.py` 請 Gemini（或 Claude）從貼文內文抽出性別、年齡、品種、花色、結紮／疫苗／愛滋白血、地區、聯絡方式，並判斷是不是真的送養文（排除救援、走失、活動、狗、已領養）。貼文原文完整保留在「詳細說明」。
   - 需要先設定金鑰：PowerShell `$env:GEMINI_API_KEY="..."`。匯入時加上 `--llm`（`python ingest.py --llm <檔案>`）才會用模型讀取新貼文；不加就沿用規則解析，不會花錢。Google 的費用要自己看 https://ai.google.dev/gemini-api/docs/pricing ，把單價設成 `CATADOPT_LLM_PRICE="每百萬輸入詞元美元,每百萬輸出詞元美元"` 才會顯示預估。
   - 已在資料庫裡的貼文：`python llm_extract.py --backfill`（會先顯示預估費用並詢問）。同一篇貼文的答案會存快取，不會重複付費。
-  - 預設模型 `claude-opus-5-5`；想省錢可加 `--model claude-haiku-5-5`（約便宜 40 倍，判斷略粗）。
+  - 預設模型：有 Google 金鑰時 `gemini-3.5-flash-lite`，只有 Claude 金鑰時 `claude-opus-5-5`；可用 `--model` 指定。
+
+## 公開網站（Netlify，唯讀）
+```
+python publish.py      # 產生 public_site/：只有訪客看得到的頁面、上架中的貓（data/cats.json）與照片
+```
+- 公開網站是純靜態檔案，**沒有伺服器、也沒有管理者 API**，所以審核、回報、缺照片、修改紀錄、編輯這些管理介面不會出現，也無法從網站修改任何資料；管理一律在這台電腦上用 `python app.py`（http://127.0.0.1:8765）。
+- 待審核、已下架、已合併的貓，以及只有管理者會用到的欄位，都不會放進去。
+- 訪客按「回報問題」會送到 Netlify Forms（Netlify > 專案 tw-cat-adoption-hub > Forms 查看）。
+- 部署：Netlify 專案 `tw-cat-adoption-hub`（https://tw-cat-adoption-hub.netlify.app）。到 https://app.netlify.com/projects/tw-cat-adoption-hub/deploys ，把 `public_site` 資料夾整個拖進頁面上的拖放區即可上線。
+- 資料有變（收容所同步、`python apify_latest.py`、管理者修改）之後，重跑 `python publish.py` 再拖放一次，網站才會更新。
 
 ## 防止重複
 - 同一來源內重複（相同網址、相同內容、相同照片、同聯絡人且資料相同）：匯入時直接略過。
 - 不同來源疑似同一隻（例如臉書貼文與收容所同一收容編號、晶片號碼相同、內容或照片相同）：先暫不公開，列入「待確認重複」（網站右上導覽，僅本機可見），由你選「同一隻（合併）」或「不同隻（公開）」，也可復原。
 
 ## 檔案
-`app.py` 網站與 API · `fb_fetch.py` 臉書分批抓取 · `db.py` 資料庫 · `shelter.py` 收容所同步 · `parser.py` 貼文解析 · `dedupe.py` 重複比對 · `ingest.py` 臉書匯入 · `static/` 前端
-
-## Wix 版網站（`wix-site/`，已下線）
-> 注意：這份原始碼仍含「會員登入／會員刊登」功能（Wix 會員與 `listings` 集合）。主站已移除刊登，Wix 版若要重新上線，需先拿掉這部分。
-
-可愛溫馨風格的靜態網站，已發佈在 Wix：資料來源為農業部開放資料（訪客瀏覽器即時讀取）＋ Wix CMS（集合 `cats` 臉書貓咪、`listings` 會員刊登、`reports` 使用者回報）。
-- 權限：`cats` 只有管理者能改；`listings` 任何人可看、登入會員可新增、**只有刊登者本人與管理者能修改／刪除**（Wix 於伺服器端強制）；`reports` 訪客只能新增。
-- 刊登者用 Wix 會員（email＋密碼）登入，登入狀態與刊登紀錄保留在瀏覽器；清除瀏覽器資料後再登入即可找回。
-- 管理者在 Wix 後台 CMS 直接編輯所有資料。
-- 原始碼由已發佈的網站複製下來，更新請用 Wix 的上傳／patch 流程，網站 ID 見 Wix 後台。
+`app.py` 網站與 API（管理用，只在本機）· `publish.py` 產生公開唯讀網站 · `apify_latest.py` 抓最新貼文並上架 · `db.py` 資料庫 · `shelter.py` 收容所同步 · `parser.py` 貼文解析 · `dedupe.py` 重複比對 · `ingest.py` 臉書匯入 · `static/` 前端
 
 ## 缺照片的刊登（管理者）
 沒有照片的貓（含收容所的貓；收容所的會先自動到官方頁面找，找不到才列入）維持上架，網站導覽列（僅本機可見）會出現「缺照片」與數量，卡片上也有「📷 缺照片」標籤。進入該頁可手動補照片：打開原文，在圖片上按右鍵「複製圖片」，回到頁面點虛線框按 Ctrl+V；也可選擇圖片檔或貼上圖片網址。
-轉分享的貼文（reel、粉專貼文）的照片放在 `sharedPost.media`，`apify_fetch.py` 已會一併取出。Wix 版網站目前已下線（顯示整理中頁面），原始碼在 `wix-site/`。
+轉分享的貼文（reel、粉專貼文）的照片放在 `sharedPost.media`，`apify_fetch.py` 已會一併取出。
 
 ## 修改、修改紀錄與合併（管理者）
 - **管理者**（只有執行網站的這台電腦）：詳細頁有「✏️ 編輯」可改所有欄位，收容所的貓也一樣（你改過的欄位會被記住，之後的收容所同步不會蓋掉；還原那次修改後才會恢復跟著官方資料更新）；「📜 修改紀錄」與導覽列的「修改紀錄」頁會列出每次修改的改前／改後，每筆都能一鍵還原（還原本身也能再還原）。紀錄只有管理者看得到。

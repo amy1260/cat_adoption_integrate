@@ -65,26 +65,35 @@ function healthTags(c) {
 // ---------- shared card pieces ----------
 const photoHtml = (c) =>
   c.photo
-    ? `<img src="${esc(c.photo)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(document.createTextNode('🐱'))">`
-    : "🐱";
+    ? `<img src="${esc(c.photo)}" alt="${esc(titleOf(c))}" loading="lazy" referrerpolicy="no-referrer" data-none="${esc(t("no_photo"))}" onerror="this.replaceWith(this.dataset.none)">`
+    : `<span>${esc(t("no_photo"))}</span>`;
+
+// post titles often carry emoji; the site shows the words
+const plain = (s) => String(s ?? "").replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{20E3}]/gu, "").replace(/\s{2,}/g, " ").trim();
+const sourceShort = (s) => (I18N[state.lang]["srcs_" + s] ? t("srcs_" + s) : sourceLabel(s));
+const placeOf = (c) => regionLabel(c.region) + (c.district ? " " + c.district : "");
+
+// shelter cats have no name: their coat and breed are what a visitor tells them apart by (the number is in the detail)
+const breedShort = (c) => (c.breed === "mixed" ? t("breed_mixed_short") : breedLabel(c));
 
 function titleOf(c) {
-  if (c.source === "shelter") return [breedLabel(c) || "", colorLabel(c.color) || "", c.shelter_no || ""].filter(Boolean).join(" · ");
-  return c.name || c.title || "—";
+  if (c.source === "shelter") return [colorLabel(c.color), breedShort(c)].filter(Boolean).join(" ") || c.shelter_no || "—";
+  return plain(c.name || c.title) || "—";
 }
 
 function cardHtml(c) {
-  const tags = [sexLabel(c.sex), ageLabel(c), breedLabel(c), colorLabel(c.color)].filter(Boolean);
-  const health = healthTags(c).slice(0, 3);
+  // short enough for one line on a phone: the breed only when it is not an ordinary mixed cat
+  const facts = [sexLabel(c.sex), ageLabel(c), c.source === "shelter" ? null : colorLabel(c.color),
+    c.source !== "shelter" && c.breed && c.breed !== "mixed" ? breedLabel(c) : null].filter(Boolean).join(" · ");
+  const health = healthTags(c).slice(0, 2);
   return `
   <button class="card" data-id="${c.id}" type="button">
-    <div class="photo">${photoHtml(c)}<span class="src">${esc(sourceLabel(c.source))}</span></div>
+    <div class="photo">${photoHtml(c)}</div>
     <div class="card-body">
       <h3>${esc(titleOf(c))}</h3>
-      <div class="tags">${tags.map((x) => `<span class="tag">${esc(x)}</span>`).join("")}</div>
-      <div class="tags">${health.map(([x, k]) => `<span class="tag ${k}">${esc(x)}</span>`).join("")}${state.isAdmin && c.needs_photo ? `<span class="tag warn">📷 ${esc(t("ph_tag"))}</span>` : ""}</div>
-      <div class="meta">📍 ${esc(regionLabel(c.region))}${c.district ? " " + esc(c.district) : ""}${c.posted_at ? " · " + esc(fmtDate(c.posted_at)) : ""}</div>
-      ${c.also_listed ? `<div class="meta">🔗 ${esc(t("also_listed", { n: c.also_listed }))}</div>` : ""}
+      <div class="facts">${esc(facts)}</div>
+      <div class="tags">${health.map(([x, k]) => `<span class="tag ${k}">${esc(x)}</span>`).join("")}${state.isAdmin && c.needs_photo ? `<span class="tag warn">${esc(t("ph_tag"))}</span>` : ""}</div>
+      <div class="meta">${esc(sourceShort(c.source))} · ${esc(placeOf(c))}</div>
     </div>
   </button>`;
 }
@@ -94,11 +103,11 @@ function miniHtml(c) {
   const contact = [c.contact_name, c.contact_phone, c.contact_line && "LINE " + c.contact_line].filter(Boolean).join(" · ");
   return `
   <div class="mini">
-    <div class="photo">${photoHtml(c)}<span class="src">${esc(sourceLabel(c.source))}</span></div>
+    <div class="photo">${photoHtml(c)}</div>
     <div class="body">
       <strong>${esc(titleOf(c))}</strong>
       <div class="tags">${tags.map((x) => `<span class="tag">${esc(x)}</span>`).join("")}</div>
-      <div class="meta">📍 ${esc(regionLabel(c.region))} · ${esc(fmtDate(c.posted_at) || "")}</div>
+      <div class="meta">${esc(sourceLabel(c.source))} · ${esc(regionLabel(c.region))} · ${esc(fmtDate(c.posted_at) || "")}</div>
       <div class="meta">${esc(contact)}</div>
       <div class="snip">${esc((c.description || "").slice(0, 400))}</div>
       ${c.source_url ? `<a href="${esc(c.source_url)}" target="_blank" rel="noopener noreferrer">${esc(t("view_source"))}</a>` : ""}
@@ -137,15 +146,16 @@ async function openDetail(id) {
   $("#detail").innerHTML = `
     <div class="dlg-head"><button class="btn ghost" id="dlgClose" type="button">${esc(t("close"))}</button></div>
     <div class="dlg-body">
-      <div class="photo">${photoHtml(c)}<span class="src">${esc(sourceLabel(c.source))}</span></div>
-      <h2 style="margin:0">${esc(titleOf(c))}</h2>
+      <div class="photo">${photoHtml(c)}</div>
+      <h2>${esc(titleOf(c))}</h2>
+      <div class="dlg-src">${esc(sourceLabel(c.source))} · ${esc(placeOf(c))}</div>
+      ${c.source_url ? `<div class="dlg-actions"><a class="btn" href="${esc(c.source_url)}" target="_blank" rel="noopener noreferrer">${esc(t("view_source"))}</a></div>` : ""}
       <dl class="kv">${rows.join("")}</dl>
       ${c.description ? `<div><div class="fieldset-title">${esc(t("description"))}</div><div class="desc">${esc(c.description)}</div></div>` : ""}
-      ${c.source_url ? `<a href="${esc(c.source_url)}" target="_blank" rel="noopener noreferrer">${esc(t("view_source"))} ↗</a>` : ""}
-      ${(c.also_listed || []).length ? `<div class="meta">🔗 ${esc(t("also_listed", { n: c.also_listed.length }))}${also.map((a) => ` · <a href="${esc(a.source_url)}" target="_blank" rel="noopener noreferrer">${esc(sourceLabel(a.source))}</a>`).join("")}</div>` : ""}
+      ${(c.also_listed || []).length ? `<div class="meta">${esc(t("also_listed", { n: c.also_listed.length }))}${also.map((a) => ` · <a href="${esc(a.source_url)}" target="_blank" rel="noopener noreferrer">${esc(sourceLabel(a.source))}</a>`).join("")}</div>` : ""}
       ${manageHtml(c)}
       <div class="report">
-        <button type="button" class="linkbtn" id="reportToggle" aria-expanded="false" aria-controls="reportForm">⚑ ${esc(t("rp_open"))}</button>
+        <button type="button" class="linkbtn" id="reportToggle" aria-expanded="false" aria-controls="reportForm">${esc(t("rp_open"))}</button>
         <form id="reportForm" class="form" hidden novalidate>
           <p class="meta" style="margin:0">${esc(t("rp_intro"))}</p>
           <div class="field"><label for="rp_kind">${esc(t("rp_kind"))}</label>
@@ -173,7 +183,7 @@ function wireReport(catId) {
   toggle.onclick = () => {
     form.hidden = !form.hidden;
     toggle.setAttribute("aria-expanded", String(!form.hidden));
-    toggle.textContent = "⚑ " + t(form.hidden ? "rp_open" : "rp_close");
+    toggle.textContent = t(form.hidden ? "rp_open" : "rp_close");
     if (!form.hidden) form.scrollIntoView({ block: "nearest" });
   };
   form.onsubmit = async (e) => {
@@ -204,7 +214,7 @@ $("#detail").addEventListener("click", (e) => { if (e.target.id === "detail") e.
 
 // ---------- browse ----------
 const AGE_KEYS = ["kitten", "adult", "senior"];
-const SOURCE_KEYS = ["shelter", "fb_catparadise"];
+const SOURCE_KEYS = ["shelter", "fb_aimao"];
 
 function chipGroup(name, keys, labelFn) {
   return `<div class="chips" data-chips="${name}">${keys.map((k) => `<button type="button" class="chip${state.f[name] === k ? " on" : ""}" data-v="${k}">${esc(labelFn(k))}</button>`).join("")}</div>`;
@@ -213,22 +223,12 @@ function chipGroup(name, keys, labelFn) {
 async function renderBrowse() {
   state.meta = (await api("/api/meta")).body;
   const m = state.meta;
-  const total = Object.values(m.by_source).reduce((a, b) => a + b, 0);
-  const fb = m.by_source.fb_catparadise || 0;
   const regions = m.regions.filter((r) => m.by_region[r]);
   const breeds = Object.keys(m.breeds).filter((b) => BREED_LABEL[b]);
   $("#app").innerHTML = `
-    <section class="hero">
-      <h1>${esc(t("brand"))}</h1>
-      <p>${esc(t("tagline"))}</p>
-      <div class="stats">
-        <div class="stat"><b>${total}</b><span>${esc(t("stat_total"))}</span></div>
-        <div class="stat"><b>${m.by_source.shelter || 0}</b><span>${esc(t("stat_shelter"))}</span></div>
-        <div class="stat"><b>${fb}</b><span>${esc(t("stat_fb"))}</span></div>
-      </div>
-    </section>
     <div class="layout">
-      <aside class="filters" aria-label="Filters">
+      <aside class="filters" id="filters" aria-label="${esc(t("filters"))}">
+        <div class="filters-head"><span>${esc(t("filters"))}</span><button class="linkbtn" id="reset" type="button">${esc(t("reset"))}</button></div>
         <div class="field"><label for="q">${esc(t("search_ph"))}</label><input type="search" id="q" value="${esc(state.f.q)}"></div>
         <div class="field"><label for="region">${esc(t("region"))}</label>
           <select id="region"><option value="">${esc(t("all_regions"))}</option>
@@ -238,18 +238,25 @@ async function renderBrowse() {
         <div class="field"><label for="breed">${esc(t("breed"))}</label>
           <select id="breed"><option value="">${esc(t("all"))}</option>
           ${breeds.map((b) => `<option value="${b}"${state.f.breed === b ? " selected" : ""}>${esc(BREED_LABEL[b][isEn() ? 1 : 0])} (${m.breeds[b]})</option>`).join("")}</select></div>
-        <div class="field"><span class="fieldset-title">${esc(t("source"))}</span>${chipGroup("source", SOURCE_KEYS, sourceLabel)}</div>
         <div class="field"><span class="fieldset-title">${esc(t("health"))}</span>
           <label class="check"><input type="checkbox" id="neutered"${state.f.neutered ? " checked" : ""}> ${esc(t("neutered_only"))}</label>
           <label class="check"><input type="checkbox" id="vaccinated"${state.f.vaccinated ? " checked" : ""}> ${esc(t("vaccinated_only"))}</label>
           <label class="check"><input type="checkbox" id="fiv"${state.f.fiv ? " checked" : ""}> ${esc(t("fiv_neg"))}</label></div>
-        <button class="btn ghost" id="reset" type="button">${esc(t("reset"))}</button>
       </aside>
-      <section aria-live="polite">
-        <div class="resultbar"><strong id="count"></strong>
-          <label>${esc(t("sort"))} <select id="sort">
-            ${[["new", "sort_new"], ["region", "sort_region"], ["age", "sort_age"]].map(([v, k]) => `<option value="${v}"${state.f.sort === v ? " selected" : ""}>${esc(t(k))}</option>`).join("")}
-          </select></label></div>
+      <section class="sheet" aria-live="polite">
+        <div class="hero"><img src="/static/hero-1600.webp" srcset="/static/hero-800.webp 800w, /static/hero-1600.webp 1600w"
+          sizes="(max-width: 860px) 100vw, 75vw" width="1600" height="880" alt="${esc(t("hero_alt"))}" fetchpriority="high">
+          <div class="hero-text"><h1>${esc(t("screen_title"))}</h1>
+            <p>${esc(t("screen_sub"))}${m.updated ? ` · <span class="nowrap">${esc(t("updated", { d: m.updated }))}</span>` : ""}</p></div></div>
+        <div class="titlerow">
+          <div class="tools">
+            <button class="btn ghost filters-toggle" id="filtersToggle" type="button" aria-controls="filters" aria-expanded="false">${esc(t("filters"))}</button>
+            <label class="sortlabel">${esc(t("sort"))} <select id="sort">
+              ${[["new", "sort_new"], ["age", "sort_age"], ["age_desc", "sort_age_desc"]].map(([v, k]) => `<option value="${v}"${state.f.sort === v ? " selected" : ""}>${esc(t(k))}</option>`).join("")}
+            </select></label>
+          </div>
+        </div>
+        <div class="counts" id="counts" role="group" aria-label="${esc(t("source"))}"></div>
         <div class="grid" id="grid"></div>
         <div class="pager" id="pager"></div>
       </section>
@@ -280,6 +287,11 @@ function wireFilters() {
   });
   $("#reset").onclick = () => { Object.assign(state.f, { q: "", region: "", sex: "", age_group: "", source: "", breed: "", neutered: "", vaccinated: "", fiv: "", sort: "new", page: 1 }); renderBrowse(); };
   $("#grid").onclick = (e) => { const c = e.target.closest(".card"); if (c) openDetail(c.dataset.id); };
+  $("#counts").onclick = (e) => { const b = e.target.closest(".count"); if (b) { state.f.source = b.dataset.v; refresh(); } };
+  $("#filtersToggle").onclick = (e) => {
+    const open = $("#filters").classList.toggle("open");
+    e.currentTarget.setAttribute("aria-expanded", String(open));
+  };
 }
 
 async function loadCats() {
@@ -288,12 +300,17 @@ async function loadCats() {
   p.set("per_page", 24);
   const { body } = await api("/api/cats?" + p);
   if (!body) return;
-  $("#count").textContent = t("results", { n: body.total });
+  // the source counts follow every other filter, so each card says how many it would show
+  const bs = body.by_source || {};
+  const counts = [["", t("src_all"), Object.values(bs).reduce((a, b) => a + b, 0)], ...SOURCE_KEYS.map((k) => [k, sourceLabel(k), bs[k] || 0])];
+  $("#counts").innerHTML = counts.map(([v, label, n]) =>
+    `<button type="button" class="count${state.f.source === v ? " on" : ""}" data-v="${v}" aria-pressed="${state.f.source === v}"><span>${esc(label)}</span><b>${n.toLocaleString()}</b></button>`).join("");
   $("#grid").innerHTML = body.items.length ? body.items.map(cardHtml).join("") : `<p class="empty" style="grid-column:1/-1">${esc(t("no_results"))}</p>`;
   const pages = Math.max(1, Math.ceil(body.total / body.per_page));
+  const first = (body.page - 1) * body.per_page + 1, last = Math.min(body.total, body.page * body.per_page);
   $("#pager").innerHTML = pages > 1
     ? `<button class="btn ghost" id="prev" type="button"${body.page <= 1 ? " disabled" : ""}>${esc(t("prev"))}</button>
-       <span>${esc(t("page", { p: body.page, t: pages }))}</span>
+       <span class="num">${esc(t("range", { a: first.toLocaleString(), b: last.toLocaleString(), n: body.total.toLocaleString() }))}</span>
        <button class="btn ghost" id="next" type="button"${body.page >= pages ? " disabled" : ""}>${esc(t("next"))}</button>` : "";
   if (pages > 1) {
     $("#prev").onclick = () => { state.f.page--; loadCats(); window.scrollTo({ top: 0 }); };
@@ -354,17 +371,19 @@ async function refreshAdmin() {
 function renderNav() {
   const route = location.hash.replace(/^#/, "") || "/";
   const items = [["/", "nav_browse", 0]];
-  if (state.isAdmin) items.push(["/review", "nav_review", state.pendingReview], ["/reports", "nav_reports", state.openReports], ["/photos", "nav_photos", state.missingPhotos], ["/edits", "nav_edits", 0], ["/fetch", "nav_fetch", 0]);
-  $("#nav").innerHTML = items.map(([href, key, n]) =>
+  if (state.isAdmin) items.push(["/review", "nav_review", state.pendingReview], ["/reports", "nav_reports", state.openReports], ["/photos", "nav_photos", state.missingPhotos], ["/edits", "nav_edits", 0]);
+  $("#nav").innerHTML = items.length < 2 ? "" : items.map(([href, key, n]) =>
     `<a href="#${href}" class="${route === href ? "active" : ""}">${esc(t(key))}${n ? `<span class="badge">${n}</span>` : ""}</a>`).join("");
   $("#brandText").textContent = t("brand");
-  $("#foot").textContent = t("foot");
+  $("#foot").innerHTML = `<div class="foot-name">${esc(t("brand"))}</div><div>${esc(t("foot"))}</div>`;
   if (state.isAdminReal) {  // the admin can look at the site as a visitor sees it
     const b = document.createElement("button");
     b.className = "linkbtn"; b.style.marginInlineStart = "12px"; b.textContent = t(state.visitorPreview ? "preview_off" : "preview_on");
     b.onclick = () => { state.visitorPreview = !state.visitorPreview; sessionStorage.setItem("preview", state.visitorPreview ? "1" : "0"); location.hash = "#/"; refreshAdmin().then(route); };
     $("#foot").appendChild(b);
   }
+  $("#toTop").title = t("to_top");
+  $("#toTop").setAttribute("aria-label", t("to_top"));
   document.documentElement.lang = isEn() ? "en" : "zh-Hant";
   document.querySelectorAll(".lang button").forEach((b) => b.classList.toggle("on", b.dataset.lang === state.lang));
 }
@@ -380,7 +399,6 @@ async function route() {
   else if (r === "/review" && state.isAdmin) renderReview();
   else if (r === "/reports" && state.isAdmin) renderReports();
   else if (r === "/photos" && state.isAdmin) renderPhotos();
-  else if (r === "/fetch" && state.isAdmin) renderFetch();
   else renderBrowse();
 }
 
@@ -538,37 +556,6 @@ async function renderEdits() {
   };
 }
 
-// ---------- Facebook batch fetch (admin only): the admin decides when; each batch continues where the last stopped ----------
-let fetchTimer = null;
-const twTime = (iso) => (iso ? new Date(iso).toLocaleString(isEn() ? "en-GB" : "zh-TW", { timeZone: "Asia/Taipei", hour12: false }) : t("unknown"));
-async function renderFetch() {
-  clearTimeout(fetchTimer);
-  const { ok, body: s } = await api("/api/admin/fb-fetch");
-  if (!ok) { $("#app").innerHTML = `<section class="panel"><p>403</p></section>`; return; }
-  const r = s.last_result;
-  const runs = (s.runs || []).map((x) => `<li class="meta">${esc(x.started_at.replace("T", " "))} · ${esc(x.status || "")} · ${esc(t("ff_posts_n", { n: x.posts ?? 0 }))} · US$${x.cost_usd == null ? "?" : Number(x.cost_usd).toFixed(3)}</li>`).join("");
-  $("#app").innerHTML = `<section class="panel">
-    <h1>${esc(t("ff_title"))}</h1>
-    <p class="meta">${esc(t("ff_intro"))}</p>
-    ${s.token ? "" : `<div class="notice bad">${esc(t("ff_no_token"))}</div>`}
-    <div class="notice">${esc(t("ff_next"))}<strong>${esc(twTime(s.checkpoint))}</strong>${s.llm ? ` · ${esc(t("ff_llm", { m: s.llm }))}` : ` · ${esc(t("ff_no_llm"))}`}</div>
-    <div class="row" style="align-items:flex-end;margin-top:12px">
-      <div class="field"><label for="ffn">${esc(t("ff_count"))}</label><input id="ffn" type="number" min="1" max="1000" value="${s.batch}"></div>
-      <div class="field"><button class="btn good" id="ffgo" type="button" ${s.running || !s.token ? "disabled" : ""}>${esc(t(s.running ? "ff_running" : "ff_go"))}</button></div>
-    </div>
-    <div id="ffres" style="margin-top:12px">${s.error ? `<div class="notice bad">${esc(s.error)}</div>` : ""}${r && !s.running ? `<div class="notice good">${esc(t("ff_done", { got: r.fetched, used: r.used, added: r.added, cost: Number(r.cost_usd || 0).toFixed(3), next: twTime(r.checkpoint) }))}</div>` : ""}</div>
-    ${s.log && s.log.length ? `<pre class="meta" style="white-space:pre-wrap;max-height:260px;overflow:auto">${esc(s.log.join("\n"))}</pre>` : ""}
-    ${runs ? `<h2 style="font-size:1rem">${esc(t("ff_runs"))}</h2><ul>${runs}</ul>` : ""}
-  </section>`;
-  $("#ffgo").onclick = async () => {
-    $("#ffgo").disabled = true;
-    const res = await api("/api/admin/fb-fetch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ posts: Number($("#ffn").value) || s.batch }) });
-    if (!res.ok) $("#ffres").innerHTML = `<div class="notice bad">${esc((res.body && res.body.error) || res.status)}</div>`;
-    renderFetch();
-  };
-  if (s.running) fetchTimer = setTimeout(() => { if (location.hash === "#/fetch") renderFetch(); }, 3000);
-}
-
 // ---------- edit form (admin only) ----------
 async function renderEdit(id) {
   const admin = state.isAdmin;
@@ -636,5 +623,9 @@ document.querySelectorAll(".lang button").forEach((b) => (b.onclick = () => {
   localStorage.setItem("lang", state.lang);
   route();
 }));
+// back to top: shown once the visitor is a screen or more down the page
+const toTop = () => $("#toTop").classList.toggle("show", window.scrollY > window.innerHeight);
+window.addEventListener("scroll", toTop, { passive: true });
+$("#toTop").onclick = () => window.scrollTo({ top: 0, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
 window.addEventListener("hashchange", route);
 refreshAdmin().then(route);

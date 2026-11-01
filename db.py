@@ -85,30 +85,25 @@ CREATE TABLE IF NOT EXISTS cat_edits (
 );
 CREATE INDEX IF NOT EXISTS idx_cat_edits_cat ON cat_edits(cat_id);
 
--- Every Facebook post a batch has taken (not only the cat listings), so the next batch, which starts at the
--- last one's posting time, never imports the same post twice.
+-- Every Facebook post the Apify scraper has returned (not only the cat listings), so the next run asks only for
+-- newer posts and never imports the same post twice (apify_latest.py).
 CREATE TABLE IF NOT EXISTS fb_posts_seen (
     url TEXT PRIMARY KEY,
-    time TEXT NOT NULL               -- ISO time of the post, UTC
+    time TEXT NOT NULL,              -- ISO time of the post, UTC
+    grp TEXT                         -- which group it came from (ingest.GROUPS), so each group has its own "newest"
 );
 CREATE INDEX IF NOT EXISTS idx_fb_posts_seen_time ON fb_posts_seen(time);
 
--- One row per Apify run started by fb_fetch.py: the window it asked for, what it returned and what it cost.
+-- One row per Apify run started by apify_latest.py: what it returned and what it cost.
 CREATE TABLE IF NOT EXISTS apify_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL,
-    kind TEXT NOT NULL,              -- batch (latest | backfill: the earlier daily job)
+    kind TEXT NOT NULL,              -- latest (backfill: the earlier daily job)
     run_id TEXT,
     status TEXT,
     posts INTEGER,
     cost_usd REAL,
     note TEXT
-);
-
--- Small settings and progress markers, e.g. fb_checkpoint: where the next Facebook batch starts (fb_fetch.py).
-CREATE TABLE IF NOT EXISTS kv (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
 );
 
 -- Answers the language model already gave, so a re-run never pays for the same post twice.
@@ -154,6 +149,9 @@ def init():
                          ("state_checked_at", "TEXT"), ("released", "INTEGER NOT NULL DEFAULT 0")):
             if col not in cols:  # databases created before this column existed
                 conn.execute(f"ALTER TABLE cats ADD COLUMN {col} {ddl}")
+        if "grp" not in {r["name"] for r in conn.execute("PRAGMA table_info(fb_posts_seen)")}:
+            conn.execute("ALTER TABLE fb_posts_seen ADD COLUMN grp TEXT")
+        conn.execute("UPDATE fb_posts_seen SET grp='catparadise' WHERE grp IS NULL")   # all posts before groups were told apart
         dcols = {r["name"] for r in conn.execute("PRAGMA table_info(dup_candidates)")}
         for col, ddl in (("kept", "TEXT"), ("fill_edit", "INTEGER")):
             if col not in dcols:

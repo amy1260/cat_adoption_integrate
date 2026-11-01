@@ -8,7 +8,7 @@ Two providers, picked by what credentials exist (or CATADOPT_LLM_PROVIDER=google
 name in CATADOPT_LLM_MODEL):
   google     GEMINI_API_KEY (or GOOGLE_API_KEY), from https://aistudio.google.com/apikey; default model gemini-3.5-flash-lite
   anthropic  ANTHROPIC_API_KEY (or `ant auth login`); default model claude-opus-5-5
-When both exist Google is used. ingest.py uses it only with --llm (fb_fetch.py uses it by itself); otherwise
+When both exist Google is used. ingest.py uses it only with --llm (apify_latest.py uses it by itself); otherwise
 it keeps the rule-based fields.
 
 Back-fill the listings already in the database (asks before spending anything):

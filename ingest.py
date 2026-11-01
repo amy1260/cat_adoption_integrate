@@ -15,7 +15,7 @@ from images import download, first_image_url, save_data_url
 from parser import build_cat, parse_post
 from shelter import COLUMNS
 
-GROUPS = {"catparadise"}
+GROUPS = {"catparadise", "aimao"}   # 貓咪天堂 (earlier), 愛貓領養 (fetched since 2026-11-01)
 CUTOFF_DAYS = 92  # keep roughly the last three months
 
 
