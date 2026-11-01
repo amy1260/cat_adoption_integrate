@@ -190,8 +190,21 @@ dialog::backdrop { background: rgba(40, 26, 16, .5); }
 /* ---------- the close: the name returns ---------- */
 .foot { color: var(--muted); font-size: .85rem; padding: 8px var(--edge) 40px calc(var(--edge) + var(--side) + 24px); max-width: var(--page); margin-inline: auto; display: grid; gap: 6px; }
 .pub-state { font-size: .82rem; }
+.ph-unfound { margin-top: 24px; }
+.ph-unfound summary { cursor: pointer; font-weight: 500; padding: 8px 0; }
 .pub-state .warn { color: var(--warn); }
 .foot .foot-name { font-family: var(--round); font-size: 1.5rem; color: var(--ink); line-height: 1.2; }
+.foot-cols { display: grid; grid-template-columns: minmax(220px, 1fr) 2fr; gap: 16px 40px; align-items: start; margin-top: 10px; }
+.foot-h { font-family: var(--round); font-size: 1.05rem; color: var(--ink); margin: 0 0 8px; }
+.foot-col p { margin: 10px 0 0; }
+.foot-links { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.foot a { color: var(--accent); }
+.shelters summary { cursor: pointer; color: var(--accent); font-weight: 500; padding: 2px 0 6px; }
+.sh-region h3 { font-family: var(--font); font-size: .85rem; font-weight: 700; color: var(--ink); margin: 14px 0 6px; }
+.sh-region ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px 24px; }
+.sh-region .linkbtn { font-weight: 500; text-align: start; }
+.sh-region .meta { margin-inline-start: 6px; font-size: .8rem; }
+.sh-contact { font-size: .8rem; margin-top: 2px; overflow-wrap: anywhere; }
 
 /* loading screen: a paw on the milk-tea frame until the first screen of cats and photos is ready, then it fades */
 .loader { position: fixed; inset: 0; z-index: 100; display: grid; place-content: center; justify-items: center; gap: 14px;
@@ -239,6 +252,7 @@ dialog::backdrop { background: rgba(40, 26, 16, .5); }
   .grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
   .card-body { padding: 10px 12px 12px; }
   .foot { padding-inline: 16px; }
+  .foot-cols { grid-template-columns: 1fr; }
   .panel { margin-inline: 8px; width: auto; }
   .pair { grid-template-columns: 1fr; }
   .topbar-inner { padding-inline: 16px; gap: 12px; }

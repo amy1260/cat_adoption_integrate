@@ -27,7 +27,7 @@ import requests
 
 import db
 import netlify_reports
-from app import REGIONS, row_to_dict
+from app import REGIONS, row_to_dict, shelter_contacts
 
 BASE = Path(__file__).resolve().parent
 OUT = BASE / "public_site"
@@ -77,7 +77,8 @@ def build():
             d["status"] = "open"
             d["needs_photo"] = False
             cats.append(d)
-    meta = {"regions": REGIONS, "by_source": {}, "by_region": {}, "breeds": {}, "updated": date.today().isoformat()}
+        shelters = shelter_contacts(conn)
+    meta = {"regions": REGIONS, "by_source": {}, "by_region": {}, "breeds": {}, "updated": date.today().isoformat(), "shelters": shelters}
     for c in cats:
         meta["by_source"][c["source"]] = meta["by_source"].get(c["source"], 0) + 1
         if c["region"]:

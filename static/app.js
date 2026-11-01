@@ -382,6 +382,52 @@ async function refreshAdmin() {
   renderNav();
 }
 
+// the page's close: where the cats come from, and how to reach every public shelter
+const SOURCES = [
+  ["foot_src_pet", "https://www.pet.gov.tw/AnimalApp/AnnounceMent.aspx?PageType=Adopt"],
+  ["foot_src_fb", "https://www.facebook.com/groups/1612153615732604"],
+];
+const telHref = (p) => "tel:" + p.split(/分機|轉|#|ext/i)[0].replace(/[^\d+]/g, "");
+function footHtml() {
+  const shelters = (state.meta && state.meta.shelters) || [];
+  const byRegion = [];
+  for (const s of shelters) {
+    const last = byRegion[byRegion.length - 1];
+    if (last && last.region === s.region) last.list.push(s); else byRegion.push({ region: s.region, list: [s] });
+  }
+  const shelter = (s) => `<li>
+      <button class="linkbtn" type="button" data-shelter="${esc(s.name)}">${esc(s.name)}</button>
+      <span class="meta">${esc(s.cats ? t("foot_cats", { n: s.cats }) : t("foot_no_cats"))}</span>
+      <div class="sh-contact">${s.phone ? `<a href="${esc(telHref(s.phone))}">${esc(s.phone)}</a>` : ""}${s.phone && s.address ? " · " : ""}${s.address
+        ? `<a href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(s.address)}" target="_blank" rel="noopener noreferrer">${esc(s.address)}</a>` : ""}</div>
+    </li>`;
+  return `<div class="foot-name">${esc(t("brand"))}</div>
+    <div class="foot-cols">
+      <div class="foot-col">
+        <h2 class="foot-h">${esc(t("foot_sources"))}</h2>
+        <ul class="foot-links">${SOURCES.map(([k, href]) => `<li><a href="${href}" target="_blank" rel="noopener noreferrer">${esc(t(k))} ↗</a></li>`).join("")}</ul>
+        <p>${esc(t("foot"))}</p>
+      </div>
+      ${shelters.length ? `<div class="foot-col">
+        <h2 class="foot-h">${esc(t("foot_shelters"))}</h2>
+        <details class="shelters"><summary>${esc(t("foot_shelters_open", { n: shelters.length }))}</summary>
+          ${byRegion.map((g) => `<div class="sh-region"><h3>${esc(regionLabel(g.region))}</h3><ul>${g.list.map(shelter).join("")}</ul></div>`).join("")}
+        </details>
+      </div>` : ""}
+    </div>`;
+}
+
+// a shelter's name in the footer shows that shelter's cats
+async function showShelter(name) {
+  Object.assign(state.f, { q: name, region: "", sex: "", age_group: "", source: "", breed: "", neutered: "", vaccinated: "", fiv: "", page: 1 });
+  if ($("#detail").open) $("#detail").close();
+  if (location.hash && location.hash !== "#/") history.replaceState(null, "", "#/");
+  $("#app").onclick = null;
+  renderNav();
+  await renderBrowse();
+  $("#counts").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+}
+
 function renderNav() {
   const route = location.hash.replace(/^#/, "") || "/";
   const items = [["/", "nav_browse", 0]];
@@ -389,7 +435,8 @@ function renderNav() {
   $("#nav").innerHTML = items.length < 2 ? "" : items.map(([href, key, n]) =>
     `<a href="#${href}" class="${route === href ? "active" : ""}">${esc(t(key))}${n ? `<span class="badge">${n}</span>` : ""}</a>`).join("");
   $("#brandText").textContent = t("brand");
-  $("#foot").innerHTML = `<div class="foot-name">${esc(t("brand"))}</div><div>${esc(t("foot"))}</div>`;
+  $("#foot").innerHTML = footHtml();
+  $("#foot").onclick = (e) => { const b = e.target.closest("[data-shelter]"); if (b) showShelter(b.dataset.shelter); };
   if (state.isAdminReal) {  // the admin can look at the site as a visitor sees it
     const b = document.createElement("button");
     b.className = "linkbtn"; b.style.marginInlineStart = "12px"; b.textContent = t(state.visitorPreview ? "preview_off" : "preview_on");
@@ -511,7 +558,9 @@ async function renderPhotos() {
   if (!ok) { $("#app").innerHTML = `<section class="panel"><p>403</p></section>`; return; }
   const item = (c) => `
     <div class="review-item" data-cat="${c.id}">
-      <div class="meta"><strong>${esc(titleOf(c))}</strong> · ${esc(sourceLabel(c.source))} · ${esc(regionLabel(c.region))}${c.contact_name ? " · " + esc(c.contact_name) : ""}</div>
+      <div class="meta"><strong>${esc(titleOf(c))}</strong> · ${esc(sourceLabel(c.source))} · ${esc(regionLabel(c.region))}${c.contact_name ? " · " + esc(c.contact_name) : ""}
+        ${c.posted_at || c.created_at ? ` · ${esc(t("ph_posted", { d: fmtDate(c.posted_at || c.created_at) }))}` : ""}
+        ${c.photo_unfound ? ` · <span class="tag warn">${esc(t("ph_unfound_on", { d: fmtDate(c.photo_unfound) }))}</span>` : ""}</div>
       <div class="snip" style="white-space:pre-line;color:var(--muted)">${esc((c.description || "").slice(0, 160))}</div>
       <div>${c.source_url ? `<a href="${esc(c.source_url)}" target="_blank" rel="noopener noreferrer">${esc(t("ph_open_post"))} ↗</a>` : `<span class="meta">${esc(t("ph_no_url"))}</span>`}</div>
       <div class="dropzone" tabindex="0" data-paste>${esc(t("ph_paste"))}</div>
@@ -520,13 +569,16 @@ async function renderPhotos() {
         <div class="field"><label>${esc(t("ph_url"))}</label><input type="url" placeholder="https://" data-url></div>
       </div>
       <div data-res></div>
-      <div class="actions"><button class="btn good" data-save type="button">${esc(t("ph_save"))}</button></div>
+      <div class="actions"><button class="btn good" data-save type="button">${esc(t("ph_save"))}</button>
+        <button class="btn ghost" data-unfound="${c.photo_unfound ? "0" : "1"}" type="button">${esc(t(c.photo_unfound ? "ph_unfound_undo" : "ph_unfound"))}</button></div>
     </div>`;
   $("#app").innerHTML = `
   <section class="panel">
     <h1>${esc(t("ph_title"))}</h1>
     <p class="meta">${esc(t("ph_intro"))}</p>
-    ${body.items.length ? body.items.map(item).join("") : `<p class="empty">${esc(t("ph_empty"))}</p>`}
+    ${body.items.length ? body.items.map(item).join("") : `<p class="empty">${esc(t(body.unfound.length ? "ph_empty_rest" : "ph_empty"))}</p>`}
+    ${body.unfound.length ? `<details class="ph-unfound"><summary>${esc(t("ph_unfound_list", { n: body.unfound.length }))}</summary>
+      <p class="meta">${esc(t("ph_unfound_intro"))}</p>${body.unfound.map(item).join("")}</details>` : ""}
   </section>`;
   const send = async (box, blob) => {
     const res = box.querySelector("[data-res]"), fd = new FormData();
@@ -538,7 +590,19 @@ async function renderPhotos() {
     const r = await api(`/api/cats/${box.dataset.cat}/photo`, { method: "POST", body: fd });
     if (r.ok) { await refreshAdmin(); renderPhotos(); } else res.innerHTML = `<div class="notice bad">${esc(t("ph_failed"))}</div>`;
   };
-  $("#app").onclick = (e) => { const b = e.target.closest("[data-save]"); if (b) send(b.closest("[data-cat]")); };
+  $("#app").onclick = async (e) => {
+    const b = e.target.closest("[data-save]");
+    if (b) return send(b.closest("[data-cat]"));
+    const u = e.target.closest("[data-unfound]");   // set aside: no photo to be found for now (or take it back)
+    if (!u) return;
+    u.disabled = true;
+    await api(`/api/cats/${u.closest("[data-cat]").dataset.cat}/photo_unfound`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ unfound: u.dataset.unfound === "1" }),
+    });
+    const open = $(".ph-unfound")?.open;
+    await refreshAdmin(); await renderPhotos();
+    if (open && $(".ph-unfound")) $(".ph-unfound").open = true;
+  };
   $("#app").onpaste = (e) => {
     const zone = e.target.closest && e.target.closest("[data-paste]");
     const file = zone && [...(e.clipboardData ? e.clipboardData.files : [])].find((f) => f.type.startsWith("image/"));

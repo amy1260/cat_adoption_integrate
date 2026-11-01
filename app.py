@@ -28,7 +28,7 @@ REGIONS = ["臺北市", "新北市", "基隆市", "桃園市", "新竹市", "新
 
 def row_to_dict(r):
     d = dict(r)
-    for k in ("edit_token_hash", "locked", "photo_checked_at", "state_checked_at", "released"):
+    for k in ("edit_token_hash", "locked", "photo_checked_at", "state_checked_at", "released", "photo_unfound"):
         d.pop(k, None)
     d["health_tags"] = json.loads(d["health_tags"] or "[]")
     for k in ("neutered", "vaccinated"):
@@ -126,7 +126,25 @@ def meta():
             f"SELECT region, COUNT(*) FROM cats WHERE {base} AND region IS NOT NULL GROUP BY region")}
         breeds = {r[0]: r[1] for r in conn.execute(
             f"SELECT breed, COUNT(*) FROM cats WHERE {base} AND breed IS NOT NULL GROUP BY breed")}
-    return jsonify({"regions": REGIONS, "by_source": by_source, "by_region": by_region, "breeds": breeds})
+        shelters = shelter_contacts(conn)
+    return jsonify({"regions": REGIONS, "by_source": by_source, "by_region": by_region, "breeds": breeds, "shelters": shelters})
+
+
+def shelter_contacts(conn):
+    """Every public shelter seen in the data, with its phone and address (as on its latest animal) and how many of its
+    cats are up now; for the page footer, in the order of REGIONS."""
+    out = {}
+    for r in conn.execute("SELECT contact_name, contact_phone, contact_other, region FROM cats "
+                          "WHERE source='shelter' AND contact_name IS NOT NULL ORDER BY COALESCE(posted_at, created_at)"):
+        s = out.setdefault(r["contact_name"], {"name": r["contact_name"], "cats": 0})
+        for key, val in (("phone", r["contact_phone"]), ("address", r["contact_other"]), ("region", r["region"])):
+            if val:
+                s[key] = val   # the latest record wins
+    for name, n in conn.execute(f"SELECT contact_name, COUNT(*) FROM cats WHERE source='shelter' AND {db.PUBLIC} GROUP BY contact_name"):
+        if name in out:
+            out[name]["cats"] = n
+    order = {r: i for i, r in enumerate(REGIONS)}
+    return sorted(out.values(), key=lambda s: (order.get(s.get("region"), len(REGIONS)), s["name"]))
 
 
 def local_only(fn):
@@ -173,7 +191,8 @@ def review_count():
 @local_only
 def review_decide(cand_id):
     """keep_new / keep_existing: same cat, the admin picks which listing stays (the other is hidden and shown as
-    "also listed"); different: both stay; undo: put the decision back in the queue."""
+    "also listed"); different: both stay; undo: put the decision back in the queue. The listing that stays goes up
+    even if it had been taken down (choosing it is choosing to show it); undo takes it down again."""
     data = request.get_json(silent=True) or {}
     decision = {"same": "keep_existing"}.get(data.get("decision"), data.get("decision"))
     fill = data.get("fill", True) is not False  # copy what the hidden listing alone knows into the kept one
@@ -187,17 +206,27 @@ def review_decide(cand_id):
         if decision != "undo" and cand["decision"]:
             return jsonify({"error": "already_decided"}), 409
         new_id, old_id = cand["cat_id"], cand["other_id"]
+
+        def put_up(cat_id):   # the listing that stays is shown; remember it if it had been taken down
+            if conn.execute("SELECT status FROM cats WHERE id=?", (cat_id,)).fetchone()["status"] != "open":
+                conn.execute("UPDATE cats SET status='open' WHERE id=?", (cat_id,))
+                return cat_id
+            return None
+
         if decision == "different":
             conn.execute("UPDATE cats SET dup_of=NULL, review='cleared' WHERE id=?", (new_id,))
-            conn.execute("UPDATE dup_candidates SET decision='different', decided_at=? WHERE id=?", (now, cand_id))
+            conn.execute("UPDATE dup_candidates SET decision='different', decided_at=?, reopened=? WHERE id=?",
+                         (now, put_up(new_id), cand_id))
         elif decision in ("keep_new", "keep_existing"):
             keep, drop = (new_id, old_id) if decision == "keep_new" else (old_id, new_id)
             fill_edit = edits.fill_blanks(conn, keep, drop) if fill else None
             conn.execute("UPDATE cats SET dup_of=NULL, review=CASE WHEN review='pending' THEN 'cleared' ELSE review END WHERE id=?", (keep,))
             conn.execute("UPDATE cats SET dup_of=?, review='merged' WHERE id=?", (keep, drop))
-            conn.execute("UPDATE dup_candidates SET decision=?, kept=?, fill_edit=?, decided_at=? WHERE id=?",
-                         (decision, "new" if keep == new_id else "existing", fill_edit, now, cand_id))
+            conn.execute("UPDATE dup_candidates SET decision=?, kept=?, fill_edit=?, decided_at=?, reopened=? WHERE id=?",
+                         (decision, "new" if keep == new_id else "existing", fill_edit, now, put_up(keep), cand_id))
         else:  # undo
+            if cand["reopened"]:   # the decision had put it up: take it down again
+                conn.execute("UPDATE cats SET status='closed' WHERE id=?", (cand["reopened"],))
             if cand["fill_edit"]:
                 try:
                     edits.revert_edit(conn, cand["fill_edit"], f"undo merge #{cand_id}")
@@ -206,7 +235,7 @@ def review_decide(cand_id):
             if cand["kept"] == "new":  # the older listing had been hidden: bring it back
                 conn.execute("UPDATE cats SET dup_of=NULL, review=NULL WHERE id=?", (old_id,))
             conn.execute("UPDATE cats SET dup_of=NULL, review='pending' WHERE id=?", (new_id,))
-            conn.execute("UPDATE dup_candidates SET decision=NULL, kept=NULL, fill_edit=NULL, decided_at=NULL WHERE id=?", (cand_id,))
+            conn.execute("UPDATE dup_candidates SET decision=NULL, kept=NULL, fill_edit=NULL, decided_at=NULL, reopened=NULL WHERE id=?", (cand_id,))
     return jsonify({"ok": True})
 
 
@@ -250,19 +279,36 @@ def report_cat(cat_id):
 @app.get("/api/photos/missing")
 @local_only
 def photos_missing():
-    """Listings that stay up without a photo, so the admin can add one by hand."""
+    """Listings that stay up without a photo, so the admin can add one by hand; newest post first. The ones marked
+    "no photo to be found" come apart, so they are not looked into again."""
     with db.connect() as conn:
         rows = conn.execute(
-            f"SELECT * FROM cats WHERE photo IS NULL AND released=0 AND {db.PUBLIC} ORDER BY source='shelter', posted_at DESC").fetchall()
-    return jsonify({"items": [row_to_dict(r) for r in rows]})
+            f"SELECT * FROM cats WHERE photo IS NULL AND released=0 AND {db.PUBLIC} ORDER BY COALESCE(posted_at, created_at) DESC, id DESC").fetchall()
+    out = {"items": [], "unfound": []}
+    for r in rows:
+        d = row_to_dict(r)
+        d["photo_unfound"] = r["photo_unfound"]
+        out["unfound" if r["photo_unfound"] else "items"].append(d)
+    return jsonify(out)
 
 
 @app.get("/api/photos/count")
 @local_only
 def photos_count():
     with db.connect() as conn:
-        n = conn.execute(f"SELECT COUNT(*) FROM cats WHERE photo IS NULL AND released=0 AND {db.PUBLIC}").fetchone()[0]
+        n = conn.execute(f"SELECT COUNT(*) FROM cats WHERE photo IS NULL AND photo_unfound IS NULL AND released=0 AND {db.PUBLIC}").fetchone()[0]
     return jsonify({"missing": n})
+
+
+@app.post("/api/cats/<int:cat_id>/photo_unfound")
+@local_only
+def photo_unfound(cat_id):
+    """Mark (or unmark) that no photo can be found for this listing for now."""
+    mark = (request.get_json(silent=True) or {}).get("unfound", True) is not False
+    with db.connect() as conn:
+        cur = conn.execute("UPDATE cats SET photo_unfound=? WHERE id=?",
+                           (datetime.now().isoformat(timespec="seconds") if mark else None, cat_id))
+    return (jsonify({"ok": True}), 200) if cur.rowcount else (jsonify({"error": "not_found"}), 404)
 
 
 @app.post("/api/cats/<int:cat_id>/photo")
@@ -286,6 +332,7 @@ def set_photo(cat_id):
         return jsonify({"error": "unusable_image"}), 422
     with db.connect() as conn:
         edits.apply_edit(conn, cat_id, {"photo": path, "photo_hash": phash}, actor, "photo")
+        conn.execute("UPDATE cats SET photo_unfound=NULL WHERE id=?", (cat_id,))   # found after all
     return jsonify({"photo": path})
 
 

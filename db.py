@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS cats (
     edit_token_hash TEXT,            -- sha256 of the poster's secret; the secret itself is never stored
     locked TEXT,                     -- JSON list of fields the admin changed by hand; the shelter sync leaves them alone
     photo_checked_at TEXT,           -- last time the shelter's own page was searched for a photo
+    photo_unfound TEXT,              -- when the admin marked that no photo can be found for now (set aside on 缺照片)
     shelter_state TEXT,              -- 是否開放認領養 as the shelter's own page shows it (e.g. 適合認養, ※已出所)
     state_checked_at TEXT,
     released INTEGER NOT NULL DEFAULT 0,   -- 1: the animal has left the shelter, so it is no longer listed
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS dup_candidates (
     decided_at TEXT,
     kept TEXT,                       -- new | existing: which listing stays when they are the same cat
     fill_edit INTEGER,               -- the edit that copied blanks into the kept listing (undone with the merge)
+    reopened INTEGER,                -- the listing the decision put back up (it was taken down); taken down again on undo
     UNIQUE (cat_id, other_id)
 );
 
@@ -147,7 +149,7 @@ def init():
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(cats)")}
         for col, ddl in (("review", "TEXT"), ("age_months_post", "INTEGER"), ("extracted_by", "TEXT"), ("edit_token_hash", "TEXT"),
                          ("locked", "TEXT"), ("photo_checked_at", "TEXT"), ("shelter_state", "TEXT"),
-                         ("state_checked_at", "TEXT"), ("released", "INTEGER NOT NULL DEFAULT 0")):
+                         ("state_checked_at", "TEXT"), ("released", "INTEGER NOT NULL DEFAULT 0"), ("photo_unfound", "TEXT")):
             if col not in cols:  # databases created before this column existed
                 conn.execute(f"ALTER TABLE cats ADD COLUMN {col} {ddl}")
         if "grp" not in {r["name"] for r in conn.execute("PRAGMA table_info(fb_posts_seen)")}:
@@ -157,7 +159,7 @@ def init():
             conn.execute("ALTER TABLE reports ADD COLUMN netlify_id TEXT")   # set on reports sent from the public site
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_netlify ON reports(netlify_id) WHERE netlify_id IS NOT NULL")
         dcols = {r["name"] for r in conn.execute("PRAGMA table_info(dup_candidates)")}
-        for col, ddl in (("kept", "TEXT"), ("fill_edit", "INTEGER")):
+        for col, ddl in (("kept", "TEXT"), ("fill_edit", "INTEGER"), ("reopened", "INTEGER")):
             if col not in dcols:
                 conn.execute(f"ALTER TABLE dup_candidates ADD COLUMN {col} {ddl}")
         # Until now age_months held the age stated in the post; keep that as the starting point.
