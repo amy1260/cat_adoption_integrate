@@ -50,7 +50,7 @@ const I18N = {
     foot: "資料來源：農業部全國動物收容管理系統開放資料、愛貓領養臉書社團公開貼文。實際領養請以原始來源為準。",
     foot_sources: "資料來源與社團", foot_src_pet: "全國動物收容管理系統・動物認領養", foot_src_fb: "愛貓領養（臉書社團）",
     foot_shelters: "公立收容所聯絡方式", foot_shelters_open: "展開 {n} 間收容所的電話與地址", foot_cats: "{n} 隻待認養", foot_no_cats: "目前沒有貓咪",
-    screen_title: "等一個家", screen_sub: "全國公立收容所與愛貓領養社團的送養貓咪", updated: "{d} 更新",
+    screen_title: "待領養貓咪^⦁᎑-^ ੭ ", screen_sub: "全國公立收容所與愛貓領養社團的送養貓咪", updated: "{d} 更新",
     breed_mixed_short: "米克斯", srcs_shelter: "收容所", srcs_fb_aimao: "愛貓領養", 
     src_all: "全部", filters: "篩選", filters_done: "確定，看 {n} 隻貓咪", to_top: "回到頂端", hero_alt: "三隻虎斑貓並排趴在米色地毯上，看著鏡頭", range: "第 {a}–{b} 隻，共 {n} 隻",
     // problem reports
