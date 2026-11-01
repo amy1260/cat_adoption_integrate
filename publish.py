@@ -25,7 +25,8 @@ HIDDEN = ("photo_hash", "review", "dup_of", "extracted_by", "shelter_state", "st
 
 REPORT_FORM = """<!-- Netlify Forms reads this at deploy time; static-api.js posts the visitor's report to it. -->
 <form name="report" data-netlify="true" netlify-honeypot="website" hidden>
-  <input name="cat_id"><input name="cat"><input name="kind"><textarea name="message"></textarea><input name="contact"><input name="website">
+  <input name="cat_id"><input name="cat"><input name="kind"><textarea name="message"></textarea><input name="contact">
+  <input name="site_link"><input name="admin_link"><input name="source_url"><input name="website">
 </form>
 """
 

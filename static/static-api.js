@@ -51,6 +51,15 @@
     return { total: out.length, page, per_page: per, by_source, items };
   }
 
+  // what the Netlify Forms list shows for the cat: name (or the post title), where it came from, where it is,
+  // and the shelter's number when there is one, e.g. 「貝莉 · 愛貓領養（臉書） · 屏東縣 萬丹鄉」
+  const plain = (s) => (s || "").replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{1F1E6}-\u{1F1FF}▲▼🔺🔻]/gu, "").replace(/\s+/g, " ").trim();
+  function catSummary(c) {
+    const source = (typeof I18N !== "undefined" && I18N.zh["src_" + c.source]) || c.source;   // i18n.js loads after this file
+    return [plain(c.name) || plain(c.title), source, [c.region, c.district].filter(Boolean).join(" "),
+      c.shelter_no ? `收容編號 ${c.shelter_no}` : ""].filter(Boolean).join(" · ");
+  }
+
   async function report(id, opts) {
     const d = JSON.parse(opts.body || "{}");
     if (d.website) return reply(200, { ok: true });   // honeypot: only bots fill it in
@@ -61,8 +70,11 @@
     if (Object.keys(fields).length) return reply(400, { error: "validation", fields });
     const cat = (await load()).byId.get(id);
     const form = new URLSearchParams({
-      "form-name": "report", cat_id: String(id), cat: cat ? `${cat.title || ""} ${cat.source_url || ""}` : "",
-      kind, message, contact: (d.contact || "").trim().slice(0, 120), website: "",
+      "form-name": "report", cat_id: String(id), cat: cat ? catSummary(cat) : "",
+      kind, message, contact: (d.contact || "").trim().slice(0, 120),
+      site_link: `${location.origin}/#/cat/${id}`,   // opens this cat on the public site
+      admin_link: `http://127.0.0.1:8765/#/edit/${id}`,   // opens it in the admin, on the computer running python app.py
+      source_url: cat?.source_url || "", website: "",
     });
     const r = await realFetch("/", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form.toString() });
     return r.ok ? reply(201, { ok: true }) : reply(500, { error: "failed" });

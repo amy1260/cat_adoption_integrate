@@ -1,7 +1,7 @@
 // UI strings and data labels. Chinese is the default; English is a toggle.
 const I18N = {
   zh: {
-    brand: "貓咪領養統整站",
+    brand: "喵中注定",
     tagline: "整合收容所與中途送養資訊，一個網站找到你的貓",
     nav_browse: "瀏覽貓咪", nav_upload: "刊登送養", nav_review: "待確認重複",
     stat_total: "隻待領養", stat_shelter: "收容所", stat_fb: "臉書社團", stat_user: "網站刊登",
@@ -50,7 +50,7 @@ const I18N = {
     foot: "資料來源：農業部全國動物收容管理系統開放資料、愛貓領養臉書社團公開貼文。實際領養請以原始來源為準。",
     screen_title: "等一個家", screen_sub: "全國公立收容所與愛貓領養社團的送養貓咪", updated: "{d} 更新",
     breed_mixed_short: "米克斯", srcs_shelter: "收容所", srcs_fb_aimao: "愛貓領養", 
-    src_all: "全部", filters: "篩選", to_top: "回到頂端", hero_alt: "三隻虎斑貓並排趴在米色地毯上，看著鏡頭", range: "第 {a}–{b} 隻，共 {n} 隻",
+    src_all: "全部", filters: "篩選", filters_done: "確定，看 {n} 隻貓咪", to_top: "回到頂端", hero_alt: "三隻虎斑貓並排趴在米色地毯上，看著鏡頭", range: "第 {a}–{b} 隻，共 {n} 隻",
     // problem reports
     nav_reports: "使用者回報", nav_photos: "缺照片", nav_mine: "我的刊登", nav_edits: "修改紀錄",
     mine_title: "我的刊登", mine_intro: "這些是你在這個瀏覽器刊登的貓咪，只有你可以修改（管理者也可以）。換手機或清除瀏覽器資料前，請先複製「管理連結」。", mine_empty: "這個瀏覽器還沒有刊登紀錄。",
@@ -128,7 +128,7 @@ const I18N = {
     foot: "Sources: Ministry of Agriculture shelter open data and public posts of the Cat Adoption Lovers (愛貓領養) Facebook group. Always confirm with the original source.",
     screen_title: "Cats waiting for a home", screen_sub: "Cats for adoption from Taiwan's public shelters and the 愛貓領養 group", updated: "updated {d}",
     breed_mixed_short: "mixed", srcs_shelter: "Shelter", srcs_fb_aimao: "Facebook group", srcs_fb_catparadise: "Facebook group",
-    src_all: "All", filters: "Filters", to_top: "Back to top", hero_alt: "Three tabby cats lying side by side on a beige rug, looking at the camera", range: "{a}–{b} of {n} cats",
+    src_all: "All", filters: "Filters", filters_done: "Done, show {n} cats", to_top: "Back to top", hero_alt: "Three tabby cats lying side by side on a beige rug, looking at the camera", range: "{a}–{b} of {n} cats",
     nav_reports: "User reports", nav_photos: "Missing photos", nav_mine: "My listings", nav_edits: "Edit history",
     mine_title: "My listings", mine_intro: "These are the cats you posted from this browser. Only you (and the admin) can change them. Copy the manage link before switching phones or clearing browser data.", mine_empty: "No listings from this browser yet.",
     mine_pending: "Under review (not public yet)", mine_closed: "Taken down", act_edit: "Edit", act_unlist: "Take down", act_relist: "Put back up", act_history: "History", act_copy: "Copy manage link", copied: "Copied",

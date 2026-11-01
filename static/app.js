@@ -172,7 +172,7 @@ async function openDetail(id) {
         </form>
       </div>
     </div>`;
-  $("#dlgClose").onclick = () => $("#detail").close();
+  $("#dlgClose").onclick = () => { $("#detail").close(); leaveCatLink(); };
   wireReport(c.id);
   wireManage(c);
   if (!$("#detail").open) $("#detail").showModal();
@@ -210,7 +210,11 @@ function wireReport(catId) {
     }
   };
 }
-$("#detail").addEventListener("click", (e) => { if (e.target.id === "detail") e.target.close(); });
+// closing a cat opened from a link leaves the list's address, without reloading the list; done on the close button
+// and the backdrop as well as on "close", which not every browser fires
+const leaveCatLink = () => { if (location.hash.startsWith("#/cat/")) history.replaceState(null, "", "#/"); };
+$("#detail").addEventListener("close", leaveCatLink);
+$("#detail").addEventListener("click", (e) => { if (e.target.id === "detail") { e.target.close(); leaveCatLink(); } });
 
 // ---------- browse ----------
 const AGE_KEYS = ["kitten", "adult", "senior"];
@@ -242,6 +246,7 @@ async function renderBrowse() {
           <label class="check"><input type="checkbox" id="neutered"${state.f.neutered ? " checked" : ""}> ${esc(t("neutered_only"))}</label>
           <label class="check"><input type="checkbox" id="vaccinated"${state.f.vaccinated ? " checked" : ""}> ${esc(t("vaccinated_only"))}</label>
           <label class="check"><input type="checkbox" id="fiv"${state.f.fiv ? " checked" : ""}> ${esc(t("fiv_neg"))}</label></div>
+        <button class="btn filters-done" id="filtersDone" type="button">${esc(t("filters_done", { n: "…" }))}</button>
       </aside>
       <section class="sheet" aria-live="polite">
         <div class="hero"><img src="/static/hero-1920.webp" srcset="/static/hero-800.webp 800w, /static/hero-1920.webp 1920w"
@@ -288,9 +293,17 @@ function wireFilters() {
   $("#reset").onclick = () => { Object.assign(state.f, { q: "", region: "", sex: "", age_group: "", source: "", breed: "", neutered: "", vaccinated: "", fiv: "", sort: "new", page: 1 }); renderBrowse(); };
   $("#grid").onclick = (e) => { const c = e.target.closest(".card"); if (c) openDetail(c.dataset.id); };
   $("#counts").onclick = (e) => { const b = e.target.closest(".count"); if (b) { state.f.source = b.dataset.v; refresh(); } };
+  // phone: the filters open above the list and scroll into view; 確定 folds them away and goes to the results
+  const motion = () => (matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth");
   $("#filtersToggle").onclick = (e) => {
     const open = $("#filters").classList.toggle("open");
     e.currentTarget.setAttribute("aria-expanded", String(open));
+    if (open) $("#filters").scrollIntoView({ behavior: motion(), block: "start" });
+  };
+  $("#filtersDone").onclick = () => {
+    $("#filters").classList.remove("open");
+    $("#filtersToggle").setAttribute("aria-expanded", "false");
+    $("#counts").scrollIntoView({ behavior: motion(), block: "start" });
   };
 }
 
@@ -306,6 +319,7 @@ async function loadCats() {
   $("#counts").innerHTML = counts.map(([v, label, n]) =>
     `<button type="button" class="count${state.f.source === v ? " on" : ""}" data-v="${v}" aria-pressed="${state.f.source === v}"><span>${esc(label)}</span><b>${n.toLocaleString()}</b></button>`).join("");
   $("#grid").innerHTML = body.items.length ? body.items.map(cardHtml).join("") : `<p class="empty" style="grid-column:1/-1">${esc(t("no_results"))}</p>`;
+  $("#filtersDone").textContent = t("filters_done", { n: body.total.toLocaleString() });
   const pages = Math.max(1, Math.ceil(body.total / body.per_page));
   const first = (body.page - 1) * body.per_page + 1, last = Math.min(body.total, body.page * body.per_page);
   $("#pager").innerHTML = pages > 1
@@ -392,9 +406,12 @@ async function route() {
   const r = location.hash.replace(/^#/, "") || "/";
   if (!state.meta) state.meta = (await api("/api/meta")).body;
   renderNav();
-  if ($("#detail").open) $("#detail").close();
+  if ($("#detail").open && !r.startsWith("/cat/")) $("#detail").close();
   $("#app").onclick = null;
-  if (r.startsWith("/edit/")) renderEdit(r.slice(6));
+  if (r.startsWith("/cat/")) {   // a link straight to one cat (#/cat/123): the list, with that cat open over it
+    if (!$("#grid")) await renderBrowse();
+    await openDetail(r.slice(5));
+  } else if (r.startsWith("/edit/")) renderEdit(r.slice(6));
   else if (r === "/edits" && state.isAdmin) renderEdits();
   else if (r === "/review" && state.isAdmin) renderReview();
   else if (r === "/reports" && state.isAdmin) renderReports();
@@ -403,11 +420,13 @@ async function route() {
 }
 
 // The loading screen stays until the cats are listed and the photos on the first screen have arrived (or failed),
-// so the page shows up whole instead of filling in; never longer than 6 seconds.
+// so the page shows up whole instead of filling in; never longer than 6 seconds. On a fast phone with everything cached
+// that can take a split second, so it stays at least 0.8 s from the start and does not just flash.
 async function hideLoader() {
   const shown = [...document.querySelectorAll(".hero img, .grid img")].filter((img) => img.getBoundingClientRect().top < innerHeight);
   const arrived = shown.map((img) => (img.complete ? null : new Promise((ok) => { img.addEventListener("load", ok); img.addEventListener("error", ok); })));
-  await Promise.race([Promise.all(arrived), new Promise((ok) => setTimeout(ok, 6000))]);
+  const minimum = new Promise((ok) => setTimeout(ok, Math.max(0, 800 - performance.now())));
+  await Promise.race([Promise.all([...arrived, minimum]), new Promise((ok) => setTimeout(ok, 6000))]);
   $("#loader").classList.add("done");
 }
 

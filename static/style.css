@@ -102,7 +102,8 @@ textarea { min-height: 110px; resize: vertical; }
 .titlerow { display: flex; align-items: center; justify-content: flex-end; gap: 16px; flex-wrap: wrap; }
 .titlerow .tools { display: flex; gap: 10px; align-items: center; }
 .titlerow select { width: auto; min-height: 36px; padding-block: 4px; }
-.filters-toggle { display: none; }
+.filters-toggle, .filters-done { display: none; }
+#filters, #counts { scroll-margin-top: calc(var(--topbar) + 8px); }   /* land below the sticky top bar */
 
 /* the source counts are the source filter: the selected card takes the accent border and a pale fill */
 .counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 20px 0 var(--gap); }
@@ -220,6 +221,8 @@ dialog::backdrop { background: rgba(40, 26, 16, .5); }
   .filters-head { position: static; margin: 0; padding: 0; background: none; }
   .sheet { border-radius: var(--radius-sheet) var(--radius-sheet) 0 0; border-inline: 0; border-bottom: 0; padding: 20px 16px; min-height: auto; }
   .filters-toggle { display: inline-flex; min-height: 36px; padding-block: 4px; }
+  /* 確定 stays in reach at the bottom of the screen while the open panel is in view */
+  .filters-done { display: flex; position: sticky; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 1; width: 100%; min-height: 48px; margin-top: 4px; }
   .hero { margin: -20px -16px 16px; }
   .hero img { aspect-ratio: 16 / 9; object-position: 36% 50%; }   /* taller than the banner on a phone so the title fits below the faces; the crop leans left so both faces stay whole */
   .hero-text { padding: 32px 16px 28px; }
@@ -249,6 +252,13 @@ dialog::backdrop { background: rgba(40, 26, 16, .5); }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0s !important; animation: none !important; }
+  /* the loading screen still shows it is working, with a gentle fade that does not move */
+  .loader-paw { animation: paw-fade 1.4s ease-in-out infinite !important; }
+  .loader-dots i { animation: dot-fade 1.2s ease-in-out infinite !important; }
+  .loader-dots i:nth-child(2) { animation-delay: .2s !important; }
+  .loader-dots i:nth-child(3) { animation-delay: .4s !important; }
 }
+@keyframes paw-fade { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+@keyframes dot-fade { 0%, 100% { background: var(--control); } 50% { background: var(--accent); } }
 .sortlabel { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: .9rem; white-space: nowrap; }
 .nowrap { white-space: nowrap; }
